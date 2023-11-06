@@ -19,7 +19,7 @@ library(xgboost)
 #### Scraping and data collection ####
 library(censusapi)
 library(httr)
-library(tidycensus)
+# library(tidycensus)
 library(R.openFEC)
 library(rvest)
 library(utils)
@@ -37,12 +37,13 @@ library(rgdal)
 library(rmapshaper)
 library(sf)
 library(sp)
-library(USAboundaries)
+library(USA.state.boundaries)
 
 ## COLORS/LABELS
-candidate_fullnames <- c("biden" = "Joe Biden (D)", "trump" = "Donald Trump (R)", "amash" = "Justin Amash (L)")
-candidate_colors <- c("biden" = "blue", "trump" = "red", "amash" = "gold3")
-candidate_lastnames <- c("biden" = "Biden", "trump" = "Trump", "amash" = "Amash")
+candidate_fullnames <- c("biden" = "Joe Biden (D)", "trump" = "Donald Trump (R)", 
+                         "kennedy" = "Robert F. Kennedy Jr. (I)")
+candidate_colors <- c("biden" = "blue", "trump" = "red", "kennedy" = "orange")
+candidate_lastnames <- c("biden" = "Biden", "trump" = "Trump", "kennedy" = "Kennedy")
 
 party_names <- c("dem" = "Democratic", "rep" = "Republican")
 party_colors <- c("dem" = "blue", "rep" = "red")

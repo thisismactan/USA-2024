@@ -1,6 +1,6 @@
 source("src/shape_polls.R")
 
-poll_dates <- seq(from = as.Date("2019-01-01"), to = today(), by = 1)
+poll_dates <- seq(from = as.Date("2023-01-01"), to = today(), by = 1)
 n_days <- length(poll_dates)
 
 national_president_average_list <- vector("list", n_days)
@@ -10,51 +10,72 @@ for(i in 1:n_days) {
   current_date <- poll_dates[i]
   
   # Compute averages and standard errors
-  national_president_average_list[[i]] <- national_president_polls %>%
+  suppressMessages(national_president_average_list[[i]] <- national_president_polls %>%
     mutate(age = as.numeric(current_date - median_date),
            weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate, state) %>%
     summarise(avg = wtd.mean(pct, weight),
-              var = n() * wtd.var(pct, weight) / (n() - 1),
+              var = n() * wtd.var(pct, 1e6 * weight) / (n() - 1),
               eff_n = sum(weight)^2 / sum(weight^2)) %>%
-    mutate(median_date = current_date)
+    mutate(median_date = current_date))
 }
 
 national_president_averages <- bind_rows(national_president_average_list)
 
 # Computing house effects
-trump_leads <- national_president_polls %>%
-  left_join(national_president_averages, by = c("candidate", "median_date")) %>%
-  filter(candidate %in% c("biden", "trump")) %>%
-  arrange(poll_id, question_id, candidate) %>%
-  group_by(poll_id, question_id) %>%
-  mutate(trump_lead = pct - lag(pct),
-         avg_trump_lead = avg - lag(avg),
-         diff = trump_lead - avg_trump_lead) %>%
-  filter(!is.na(trump_lead), !is.na(avg_trump_lead)) %>%
-  dplyr::select(poll_id, question_id, median_date, pollster, pop, party, loess_weight, trump_lead, avg_trump_lead, diff)
+candidate_pcts_vs_natl <- national_president_polls %>%
+  left_join(national_president_averages, by = c("candidate", "state", "median_date"))
 
-house_effect_model <- lmer(diff ~ (1|pop) + (1|pollster), data = trump_leads, weights = loess_weight)
+biden_house_effect_model <- lmer(pct ~ (1|pop) + (1|pollster), 
+                                 data = candidate_pcts_vs_natl %>% filter(candidate == "biden"), 
+                                 weights = loess_weight)
+
+trump_house_effect_model <- lmer(pct ~ (1|pop) + (1|pollster), 
+                                 data = candidate_pcts_vs_natl %>% filter(candidate == "trump"), 
+                                 weights = loess_weight)
+
+kennedy_house_effect_model <- lmer(pct ~ (1|pop) + (1|pollster), 
+                                   data = candidate_pcts_vs_natl %>% filter(candidate == "kennedy"),
+                                   weights = loess_weight)
 
 # Converting to a mergeable data frame
-house_effects <- ranef(house_effect_model)$pollster %>%
+biden_house_effects <- ranef(biden_house_effect_model)$pollster %>%
   as.data.frame()
-house_effects <- house_effects %>% 
-  mutate(pollster = rownames(house_effects)) %>%
-  dplyr::select(pollster, house = `(Intercept)`) %>%
-  as.tbl()
+
+trump_house_effects <- ranef(trump_house_effect_model)$pollster %>%
+  as.data.frame()
+
+kennedy_house_effects <- ranef(kennedy_house_effect_model)$pollster %>%
+  as.data.frame()
+
+house_effects <- biden_house_effects %>%
+  mutate(pollster = rownames(biden_house_effects)) %>%
+  dplyr::select(pollster, biden = `(Intercept)`) %>%
+  left_join(trump_house_effects %>%
+              mutate(pollster = rownames(trump_house_effects)) %>%
+              dplyr::select(pollster, trump = `(Intercept)`),
+            by = "pollster") %>%
+  left_join(kennedy_house_effects %>%
+              mutate(pollster = rownames(kennedy_house_effects)) %>%
+              dplyr::select(pollster, kennedy = `(Intercept)`),
+            by = "pollster") %>%
+  mutate(kennedy = ifelse(is.na(kennedy), 0, kennedy)) %>%
+  melt(id.vars = "pollster", variable.name = "candidate", value.name = "house") %>%
+  as_tibble() 
 
 # Bias due to RV
-rv_bias <- ranef(house_effect_model)$pop["rv", 1]
+rv_bias <- tibble(candidate = c("biden", "trump", "kennedy"),
+                  rv_bias = c(ranef(biden_house_effect_model)$pop["rv", 1],
+                              ranef(trump_house_effect_model)$pop["rv", 1],
+                              ranef(kennedy_house_effect_model)$pop["rv", 1]))
 
 # Adjusted national polls
 national_president_polls_adj <- national_president_polls %>%
-  left_join(house_effects, by = c("pollster")) %>%
-  mutate(pct_adj = case_when(candidate == "biden" ~ pct + house / 2 + rv_bias + 0.01 * (party == "REP") - 0.01 * (party == "DEM"),
-                             candidate == "trump" ~ pct - house / 2 - rv_bias + 0.01 * (party == "DEM") - 0.01 * (party == "REP"),
-                             !(candidate %in% c("biden", "trump")) ~ pct))
-
+  left_join(house_effects, by = c("pollster", "candidate")) %>%
+  left_join(rv_bias, by = "candidate") %>%
+  mutate(house = ifelse(is.na(house), 0, house)) %>%
+  mutate(pct_adj = pct - house - rv_bias * (pop != "lv"))
 
 # Covariance matrix for current polls
 president_poll_matrix <- national_president_polls_adj %>%
@@ -62,27 +83,41 @@ president_poll_matrix <- national_president_polls_adj %>%
   filter(weight > 0) %>%
   dplyr::select(weight, poll_id, question_id, candidate, pct) %>% 
   spread(candidate, pct) %>%
-  dplyr::select(weight, biden, trump)
+  dplyr::select(weight, biden, trump, kennedy)
 
-president_poll_covariance <- cov.wt(as.matrix(president_poll_matrix %>% dplyr::select(biden, trump)), wt = president_poll_matrix$weight)
+president_poll_covariance_2p <- cov.wt(as.matrix(president_poll_matrix %>% filter(is.na(kennedy)) %>% dplyr::select(biden, trump)), 
+                                    wt = president_poll_matrix %>% filter(is.na(kennedy)) %>% pull(weight))
+
+weight_sum_2p <- sum(president_poll_covariance_2p$wt)
+
+president_poll_covariance_3p <- cov.wt(as.matrix(president_poll_matrix %>% filter(!is.na(kennedy)) %>% dplyr::select(biden, trump, kennedy)), 
+                                      wt = president_poll_matrix %>% filter(!is.na(kennedy)) %>% pull(weight))
+
+weight_sum_3p <- sum(president_poll_covariance_3p$wt)
+
+president_poll_covariance_2p_matrix <- rbind(president_poll_covariance_2p$cov, "kennedy" = c(0, 0)) %>%
+  cbind("kennedy" = c(0, 0, president_poll_covariance_2p$cov %>% diag() %>% sum()))
+
+president_poll_covariance <- weight_sum_3p * president_poll_covariance_3p$cov + 
+  weight_sum_2p * president_poll_covariance_2p_matrix
 
 # Recompute with house effect-adjusted polls
 national_president_average_adj_list <- vector("list", n_days)
-
+ 
 # Presidential polls
 for(i in 1:n_days) {
   current_date <- poll_dates[i]
   
   # Compute averages and standard errors
-  national_president_average_adj_list[[i]] <- national_president_polls_adj %>%
+  suppressMessages(national_president_average_adj_list[[i]] <- national_president_polls_adj %>%
     mutate(age = as.numeric(current_date - median_date),
            weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate, state) %>%
     summarise(avg = wtd.mean(pct, weight),
-              var = n() * wtd.var(pct, weight) / (n() - 1),
+              var = n() * wtd.var(pct, 1e6 * weight) / (n() - 1),
               eff_n = sum(weight)^2 / sum(weight^2)) %>%
-    mutate(median_date = current_date)
+    mutate(median_date = current_date))
 }
 
 # Averages
@@ -91,13 +126,11 @@ national_president_averages_adj <- bind_rows(national_president_average_adj_list
 # Time trend-adjusting state polls
 state_president_poll_leans <- state_president_polls %>%
   left_join(national_president_averages_adj %>% dplyr::select(-state), by = c("candidate", "median_date")) %>%
-  left_join(house_effects, by = "pollster") %>%
-  mutate(house = case_when(is.na(house) ~ 0,
-                           !is.na(house) ~ house),
-         pct = case_when(candidate == "biden" ~ pct + house / 2 + rv_bias + 0.01 * (party == "REP") - 0.01 * (party == "DEM"),
-                         candidate == "trump" ~ pct - house / 2 - rv_bias - 0.01 * (party == "REP") + 0.01 * (party == "DEM"),
-                         !(candidate %in% c("biden", "trump")) ~ pct),
-         state_lean = pct - avg)
+  left_join(house_effects, by = c("pollster", "candidate")) %>%
+  left_join(rv_bias, by = "candidate") %>%
+  mutate(house = ifelse(is.na(house), 0, house)) %>%
+  mutate(pct_adj = pct - house - rv_bias * (pop != "lv"),
+         state_lean = pct_adj - avg)
 
 state_president_average_list <- vector("list", n_days)
 
@@ -105,15 +138,15 @@ for(i in 1:n_days) {
   current_date <- poll_dates[i]
   
   # Compute averages and standard errors
-  state_president_average_list[[i]] <- state_president_poll_leans %>%
+  suppressMessages(state_president_average_list[[i]] <- state_president_poll_leans %>%
     mutate(age = as.numeric(current_date - median_date),
            weight = 100 * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate, state) %>%
     summarise(avg_lean = wtd.mean(state_lean, weight),
-              lean_var = wtd.var(state_lean, weight),
+              lean_var = wtd.var(state_lean, 126 * weight),
               lean_eff_n = sum(weight)^2 / sum(weight^2)) %>%
-    mutate(median_date = current_date)
+    mutate(median_date = current_date))
 }
 
 state_president_averages <- bind_rows(state_president_average_list) %>%
@@ -131,9 +164,11 @@ president_averages <- bind_rows(national_president_averages_adj, state_president
 
 # Smoothed averages
 president_averages_smoothed <- president_averages %>%
-  mutate(avg = (lag(avg, 4) + lag(avg, 3) + lag(avg, 2) + lag(avg) + avg) / 5,
-         var = (lag(var, 4) + lag(var, 3) + lag(var, 2) + lag(var) + var) / 5,
-         eff_n = (lag(eff_n, 4) + lag(eff_n, 3) + lag(eff_n, 2) + lag(eff_n) + eff_n) / 5)
+  group_by(state, candidate) %>%
+  arrange(state, candidate, median_date) %>%
+  mutate(avg = rollmeanr(avg, 5, na.pad = TRUE),
+         var = rollmeanr(var, 5, na.pad = TRUE),
+         eff_n = rollmeanr(eff_n, 5, na.pad = TRUE))
 
 
 # House polls ####
@@ -166,7 +201,7 @@ dem_generic_ballot_leads <- generic_ballot_polls %>%
          avg_dem_lead = avg - lead(avg),
          diff = dem_lead - avg_dem_lead) %>%
   filter(!is.na(dem_lead), !is.na(avg_dem_lead)) %>%
-  dplyr::select(poll_id, question_id, median_date, pollster, pop, party, loess_weight, dem_lead, avg_dem_lead, diff)
+  dplyr::select(poll_id, question_id, median_date, pollster, pop, sponsor_party, loess_weight, dem_lead, avg_dem_lead, diff)
 
 generic_ballot_house_effect_model <- lmer(diff ~ (1|pop) + (1|pollster), data = dem_generic_ballot_leads, weights = loess_weight)
 
@@ -184,8 +219,8 @@ generic_ballot_rv_bias <- ranef(generic_ballot_house_effect_model)$pop["rv", 1]
 # Adjusted national polls
 generic_ballot_polls_adj <- generic_ballot_polls %>%
   left_join(generic_ballot_house_effects, by = c("pollster")) %>%
-  mutate(pct_adj = case_when(candidate == "dem" ~ pct - house / 2 - generic_ballot_rv_bias + 0.01 * (party == "REP") - 0.01 * (party == "DEM"),
-                             candidate == "rep" ~ pct + house / 2 + generic_ballot_rv_bias + 0.01 * (party == "DEM") - 0.01 * (party == "REP"),
+  mutate(pct_adj = case_when(candidate == "dem" ~ pct - house / 2 - generic_ballot_rv_bias,
+                             candidate == "rep" ~ pct + house / 2 + generic_ballot_rv_bias,
                              !(candidate %in% c("dem", "rep")) ~ pct))
 
 
@@ -208,15 +243,15 @@ for(i in 1:n_days) {
   current_date <- poll_dates[i]
   
   # Compute averages and standard errors
-  generic_ballot_average_adj_list[[i]] <- generic_ballot_polls_adj %>%
+  suppressMessages(generic_ballot_average_adj_list[[i]] <- generic_ballot_polls_adj %>%
     mutate(age = as.numeric(current_date - median_date),
            weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate) %>%
     summarise(avg = wtd.mean(pct, weight),
-              var = n() * wtd.var(pct, weight) / (n() - 1),
+              var = n() * wtd.var(pct, 1e6 * weight) / (n() - 1),
               eff_n = sum(weight)^2 / sum(weight^2)) %>%
-    mutate(median_date = current_date)
+    mutate(median_date = current_date))
 }
 
 # Averages
@@ -226,9 +261,9 @@ generic_ballot_averages_adj <- bind_rows(generic_ballot_average_adj_list)
 generic_ballot_averages_smoothed <- generic_ballot_averages_adj %>%
   group_by(candidate) %>%
   arrange(candidate, median_date) %>%
-  mutate(avg = (lag(avg, 4) + lag(avg, 3) + lag(avg, 2) + lag(avg) + avg) / 5,
-         var = (lag(var, 4) + lag(var, 3) + lag(var, 2) + lag(var) + var) / 5,
-         eff_n = (lag(eff_n, 4) + lag(eff_n, 3) + lag(eff_n, 2) + lag(eff_n) + eff_n) / 5) %>%
+  mutate(avg = rollmeanr(avg, 5, na.pad = TRUE),
+         var = rollmeanr(var, 5, na.pad = TRUE),
+         eff_n = rollmeanr(eff_n, 5, na.pad = TRUE)) %>%
   ungroup()
 
 # Time trend-adjusting district-level polls
@@ -239,8 +274,8 @@ district_poll_leans <- house_district_polls %>%
   mutate(weight = 100 * loess_weight / exp((age + 1)^0.5),
          house = case_when(is.na(house) ~ 0,
                            !is.na(house) ~ house),
-         pct = case_when(candidate_party == "DEM" ~ pct + house / 2 + rv_bias + 0.02 * (party == "REP") - 0.02 * (party == "DEM"),
-                         candidate_party == "REP" ~ pct - house / 2 - rv_bias - 0.02 * (party == "REP") + 0.02 * (party == "DEM"),
+         pct = case_when(candidate_party == "DEM" ~ pct - house / 2 - generic_ballot_rv_bias + 0.02 * (sponsor_party == "REP") - 0.02 * (sponsor_party == "DEM"),
+                         candidate_party == "REP" ~ pct + house / 2 + generic_ballot_rv_bias - 0.02 * (sponsor_party == "REP") + 0.02 * (sponsor_party == "DEM"),
                          !(candidate %in% c("DEM", "REP")) ~ pct),
          district_lean = pct - avg) %>% 
   group_by(question_id, weight, candidate_party) %>%
@@ -275,17 +310,16 @@ district_averages <- district_poll_leans %>%
   dplyr::select(state, seat_number, poll_margin, poll_var, poll_weight) %>%
   na.omit()
 
-
 # Senate polls ####
 senate_poll_leans <- senate_polls %>%
   left_join(generic_ballot_averages_adj %>% mutate(candidate = toupper(as.character(candidate))), 
             by = c("candidate_party" = "candidate", "median_date" = "median_date")) %>%
-  left_join(house_effects, by = "pollster") %>%
+  left_join(generic_ballot_house_effects, by = "pollster") %>%
   mutate(weight = loess_weight / exp((age + 1)^0.5),
          house = case_when(is.na(house) ~ 0,
                            !is.na(house) ~ house),
-         pct = case_when(candidate_party == "DEM" ~ pct + house / 2 + rv_bias + 0.02 * (party == "REP") - 0.02 * (party == "DEM"),
-                         candidate_party == "REP" ~ pct - house / 2 - rv_bias - 0.02 * (party == "REP") + 0.02 * (party == "DEM"),
+         pct = case_when(candidate_party == "DEM" ~ pct - house / 2 - generic_ballot_rv_bias + 0.02 * (sponsor_party == "REP") - 0.02 * (sponsor_party == "DEM"),
+                         candidate_party == "REP" ~ pct + house / 2 + generic_ballot_rv_bias - 0.02 * (sponsor_party == "REP") + 0.02 * (sponsor_party == "DEM"),
                          !(candidate %in% c("DEM", "REP")) ~ pct),
          state_lean = pct - avg)
 
@@ -295,15 +329,15 @@ for(i in 1:n_days) {
   current_date <- poll_dates[i]
   
   # Compute averages and standard errors
-  senate_average_list[[i]] <- senate_poll_leans %>%
+  suppressMessages(senate_average_list[[i]] <- senate_poll_leans %>%
     mutate(age = as.numeric(current_date - median_date),
            weight = 100 * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate, candidate_party, state, seat_name) %>%
     summarise(avg_lean = wtd.mean(state_lean, weight),
-              lean_var = wtd.var(state_lean, weight),
+              lean_var = wtd.var(state_lean, 1e6 * weight),
               lean_eff_n = sum(weight)^2 / sum(weight^2)) %>%
-    mutate(median_date = current_date)
+    mutate(median_date = current_date))
 }
 
 senate_averages <- bind_rows(senate_average_list) %>%
@@ -322,8 +356,8 @@ senate_averages <- bind_rows(senate_average_list) %>%
 senate_polls_adj <- senate_polls %>%
   left_join(generic_ballot_house_effects, by = c("pollster")) %>%
   mutate(house = ifelse(is.na(house), 0, house),
-         pct_adj = case_when(candidate_party == "DEM" ~ pct - house / 2 - generic_ballot_rv_bias + 0.01 * (party == "REP") - 0.01 * (party == "DEM"),
-                             candidate == "REP" ~ pct + house / 2 + generic_ballot_rv_bias + 0.01 * (party == "DEM") - 0.01 * (party == "REP"),
+         pct_adj = case_when(candidate_party == "DEM" ~ pct - house / 2 - generic_ballot_rv_bias + 0.02 * (sponsor_party == "REP") - 0.02 * (sponsor_party == "DEM"),
+                             candidate_party == "REP" ~ pct + house / 2 + generic_ballot_rv_bias - 0.02 * (sponsor_party == "REP") + 0.02 * (sponsor_party == "DEM"),
                              !(candidate %in% c("DEM", "REP")) ~ pct))
 
 
@@ -346,15 +380,15 @@ for(i in 1:n_days) {
   current_date <- poll_dates[i]
   
   # Compute averages and standard errors
-  senate_average_adj_list[[i]] <- senate_polls_adj %>%
+  suppressMessages(senate_average_adj_list[[i]] <- senate_polls_adj %>%
     mutate(age = as.numeric(current_date - median_date),
            weight = 100 * (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate, candidate_party, state, seat_name) %>%
     summarise(avg = wtd.mean(pct, weight),
-              var = n() * wtd.var(pct, weight) / (n() - 1),
+              var = n() * wtd.var(pct, 1e6 * weight) / (n() - 1),
               eff_n = sum(weight)^2 / sum(weight^2)) %>%
-    mutate(median_date = current_date)
+    mutate(median_date = current_date))
 }
 
 # Averages
@@ -363,7 +397,7 @@ senate_averages_adj <- bind_rows(senate_average_adj_list) %>%
 
 senate_average_margins <- senate_polls_adj %>%
   mutate(age = as.numeric(today() - median_date),
-         weight = 100 * (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
+         weight = (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
   filter(weight > 0) %>%
   dplyr::select(-candidate, -pct) %>%
   spread(candidate_party, pct_adj) %>%
@@ -371,7 +405,7 @@ senate_average_margins <- senate_polls_adj %>%
   dplyr::select(state, seat_name, weight, margin) %>%
   group_by(state, seat_name) %>%
   summarise(avg = wtd.mean(margin, weight),
-            var = n() * wtd.var(margin, weight) / (n() - 1),
+            var = n() * wtd.var(margin, 1e6 * weight) / (n() - 1),
             eff_n = sum(weight)^2 / sum(weight^2)) %>%
   mutate(var = case_when(var == Inf | is.na(var) ~ 0.05^2 + 0.03^2,
                          var < Inf ~ (var + 0.03^2) / eff_n))
@@ -389,53 +423,11 @@ senate_undecided_pct <- current_senate_averages %>%
 senate_averages_smoothed <- senate_averages_adj %>%
   group_by(state, seat_name, candidate) %>%
   arrange(state, seat_name, candidate, median_date) %>%
-  mutate(avg = (lag(avg, 4) + lag(avg, 3) + lag(avg, 2) + lag(avg) + avg) / 5,
-         var = (lag(var, 4) + lag(var, 3) + lag(var, 2) + lag(var) + var) / 5,
-         eff_n = (lag(eff_n, 4) + lag(eff_n, 3) + lag(eff_n, 2) + lag(eff_n) + eff_n) / 5) %>%
+  mutate(avg = rollmeanr(avg, 5, na.pad = TRUE),
+         var = rollmeanr(var, 5, na.pad = TRUE),
+         eff_n = rollmeanr(eff_n, 5, na.pad = TRUE)) %>%
   ungroup()
 
 # Clean up after yourself
 rm(list = grep("_list", ls(), value = TRUE))
 
-# Georgia special election
-georgia_primary_average <- georgia_primary_polls %>%
-  mutate(weight = 100 * (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
-  filter(!is.na(weight)) %>%
-  group_by(candidate, candidate_party) %>%
-  summarise(logit = wtd.mean(logit(pct), weight),
-            var_logit = wtd.var(logit(pct), weight),
-            eff_n = sum(weight)^2 / sum(weight^2)) %>%
-  ungroup() %>%
-  filter(!is.na(var_logit))
-
-georgia_primary_undecided <- 1 - (georgia_primary_average$logit %>%
-  logit_inv() %>%
-  sum())
-
-georgia_primary_polls_matrix <- georgia_primary_polls %>%
-  mutate(weight = 100 * (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
-  filter(!is.na(weight)) %>%
-  mutate(logit = logit(pct),
-         logit = ifelse(logit == -Inf, logit(0.005), logit)) %>%
-  dplyr::select(question_id, weight, candidate, logit) %>%
-  filter(candidate %in% georgia_primary_average$candidate) %>%
-  spread(candidate, logit, fill = logit(0.005)) %>%
-  dplyr::select(-question_id)
-
-georgia_primary_cov <- cov.wt(as.matrix(georgia_primary_polls_matrix %>% dplyr::select(-weight)), wt = georgia_primary_polls_matrix$weight)$cov +
-  # Add in polling error variance; roughly 0.4 on logit scale so 0.16 on squared-logit scale
-  diag(rep(0.16, nrow(georgia_primary_average)))
-
-while(!is.positive.definite(georgia_primary_cov)) {
-  georgia_primary_cov <- georgia_primary_cov + diag(rep(1e-6, nrow(georgia_primary_cov)))
-}
-
-georgia_runoff_average <- georgia_runoff_polls %>%
-  mutate(weight = 100 * (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
-  filter(!is.na(weight)) %>%
-  group_by(matchup, candidate) %>%
-  summarise(avg = wtd.mean(pct, weight),
-            var = wtd.var(pct, weight),
-            eff_n = sum(weight)^2 / sum(weight^2)) %>%
-  group_by(matchup) %>%
-  mutate(undecided = 1 - sum(avg))
