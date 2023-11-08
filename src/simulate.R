@@ -81,20 +81,20 @@ state_priors <- total_deviations %>%
          biden = biden / total_pct,
          trump = trump / total_pct,
          kennedy = kennedy / total_pct) %>%
-  dplyr::select(sim_id, state, region, electoral_votes, total_deviation, biden, trump, kennedy)
+  dplyr::select(sim_id, state, region, electoral_votes, total_deviation, biden, trump, kennedy) %>%
+  melt(measure.vars = c("biden", "trump", "kennedy"), variable.name = "candidate", value.name = "prior_pct") %>%
+  as_tibble()
 
 # State prior probabilities
 state_prior_probabilities <- state_priors %>%
-  mutate(winner = case_when(biden == pmax(biden, trump, kennedy) ~ "Biden",
-                            trump == pmax(biden, trump, kennedy) ~ "Trump",
-                            kennedy == pmax(biden, trump, kennedy) ~ "Kennedy")) %>%
-  group_by(state, winner) %>%
+  group_by(sim_id, state) %>%
+  filter(prior_pct == max(prior_pct)) %>%
+  group_by(state, candidate) %>%
   summarise(prob = n() / n_sims) %>%
-  spread(winner, prob, fill = 0)
+  spread(candidate, prob, fill = 0)
 
 # State prior mean and variance
 state_prior_summary_stats <- state_priors %>%
-  melt(measure.vars = c("biden", "trump", "kennedy"), variable.name = "candidate", value.name = "prior_pct") %>%
   group_by(candidate, state) %>%
   summarise(prior_mean = mean(prior_pct),
             prior_var = var(prior_pct)) %>%
@@ -175,9 +175,8 @@ pres_state_sims <- state_polling_error_sims %>%
                            !grepl("CD-", state) ~ state)) %>%
   dplyr::select(sim_id, state, biden, trump, kennedy) %>%
   melt(id.vars = c("sim_id", "state"), variable.name = "candidate", value.name = "poll") %>%
-  right_join(state_priors %>% dplyr::select(sim_id, state, electoral_votes, biden, trump, kennedy) %>%
-               melt(id.vars = c("sim_id", "state", "electoral_votes"), variable.name = "candidate", value.name = "prior"), 
-            by = c("sim_id", "state", "candidate")) %>%
+  right_join(state_priors %>% dplyr::select(sim_id, state, electoral_votes, candidate, prior = prior_pct), 
+             by = c("sim_id", "state", "candidate")) %>%
   mutate(poll = replace_na_zero(poll)) %>%
   left_join(pres_simulation_weights, by = "state") %>%
   left_join(undecided_candidate_frac %>%

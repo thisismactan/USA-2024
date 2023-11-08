@@ -3,14 +3,14 @@ source("src/simulate.R")
 ## President ####
 # State priors ####
 ## Total electoral votes
-state_prior_summary_stats <- state_priors %>%
-  mutate(biden_ev = (biden > trump) * electoral_votes,
-         trump_ev = (trump >= biden) * electoral_votes) %>%
-  group_by(sim_id) %>%
-  summarise(biden = sum(biden_ev),
-            trump = sum(trump_ev)) %>%
-  melt(id.vars = "sim_id", variable.name = "Candidate", value.name = "ev") %>%
-  group_by(Candidate) %>%
+ev_prior_sims <- state_priors %>%
+  group_by(sim_id, state) %>%
+  filter(prior_pct == max(prior_pct)) %>%
+  group_by(sim_id, candidate) %>%
+  summarise(ev = sum(electoral_votes))
+
+prior_ev_summary_stats <- ev_prior_sims %>%
+  group_by(candidate) %>%
   summarise(pct05 = quantile(ev, 0.05),
             pct25 = quantile(ev, 0.25),
             avg = mean(ev),
@@ -18,39 +18,37 @@ state_prior_summary_stats <- state_priors %>%
             pct95 = quantile(ev, 0.95))
 
 ## Histogram that shit
-state_priors %>%
-  mutate(biden_ev = (biden > 0.5) * electoral_votes) %>%
-  group_by(sim_id) %>%
-  summarise(biden = sum(biden_ev)) %>%
-  mutate(trump = 538 - biden) %>%
-  melt(id.vars = "sim_id", variable.name = "Candidate", value.name = "ev") %>%
-  ggplot(aes(x = ev, y = ..density.., fill = Candidate)) +
-  facet_wrap(~str_to_title(Candidate), nrow = 2) +
+ev_prior_sims %>%
+  ggplot(aes(x = ev, y = ..density.., fill = candidate)) +
+  facet_wrap(~str_to_title(candidate), nrow = 3, scales = "free_y") +
   geom_vline(aes(xintercept = 270)) +
-  geom_vline(data = state_prior_summary_stats, aes(xintercept = avg, col = Candidate), size = 1) +
+  geom_vline(data = prior_ev_summary_stats, aes(xintercept = avg, col = candidate), size = 1) +
   geom_histogram(alpha = 0.7, binwidth = 1) +
   scale_y_continuous(labels = scales::percent) +
   scale_fill_manual(name = "Candidate", values = candidate_colors, labels = candidate_fullnames) +
   scale_colour_manual(name = "Candidate", values = candidate_colors, labels = candidate_fullnames) +
-  labs(title = "2020 United States presidential election forecast", subtitle = "National polls only",
+  theme(legend.position = "bottom") +
+  labs(title = "2024 United States presidential election forecast", subtitle = "National polls only",
        x = "Electoral votes", y = "Probability", caption = "270 electoral votes needed to win")
 
 ## Probability Biden wins
-(state_priors %>%
-    mutate(biden_ev = (biden > 0.5) * electoral_votes) %>%
-    group_by(sim_id) %>%
-    summarise(biden_ev = sum(biden_ev)) %>%
-    filter(biden_ev >= 270) %>%
+(ev_prior_sims %>%
+    filter(candidate == "biden", ev >= 270) %>%
     nrow()) / n_sims
 
 ## Popular vote/Electoral College winner crosstab
-prior_pop_ev_crosstab <- state_priors %>%
-  mutate(biden_ev = (biden > 0.5) * electoral_votes) %>%
+prior_pop_ev_crosstab <- ev_prior_sims %>%
   group_by(sim_id) %>%
-  summarise(biden_ev = sum(biden_ev)) %>%
-  left_join(national_popular_vote_sims %>% dplyr::select(sim_id, national_two_party_margin), by = "sim_id") %>%
-  mutate(popular_vote_winner = ifelse(national_two_party_margin >= 0, "Biden", "Trump"),
-         electoral_college_winner = ifelse(biden_ev >= 270, "Biden", "Trump")) %>%
+  filter(ev == max(ev)) %>%
+  ungroup() %>%
+  mutate(electoral_college_winner = ifelse(ev >= 270, as.character(candidate), "none")) %>%
+  left_join(national_popular_vote_sims %>% 
+              melt(id.vars = c("sim_id", "national_two_party_margin"), variable.name = "candidate", value.name = "natl_pct") %>%
+              group_by(sim_id) %>%
+              filter(natl_pct == max(natl_pct)) %>%
+              ungroup() %>%
+              mutate(popular_vote_winner = as.character(candidate)),
+            by = "sim_id") %>%
   group_by(popular_vote_winner, electoral_college_winner) %>%
   summarise(prob = n() / n_sims)
 
@@ -67,44 +65,39 @@ pres_summary_stats <- pres_sim_results %>%
 
 pres_summary_stats
 
-pres_state_summary_stats <- pres_state_sims %>%
-  mutate(biden_margin = biden - trump) %>%
-  dplyr::select(-biden, -trump) %>%
-  group_by(State = state, EVs = electoral_votes) %>%
-  summarise(biden_prob = mean(biden_margin > 0),
-            pct05 = quantile(biden_margin, 0.05),
-            pct50 = mean(biden_margin),
-            pct95 = quantile(biden_margin, 0.95))
+ev_sims <- pres_state_sims %>%
+  group_by(sim_id, state) %>%
+  filter(pct == max(pct)) %>%
+  group_by(sim_id, candidate) %>%
+  summarise(ev = sum(electoral_votes))
 
-pres_state_summary_stats %>%
-  print(n = Inf)
+ev_summary_stats <- ev_sims %>%
+  group_by(candidate) %>%
+  summarise(pct05 = quantile(ev, 0.05),
+            pct25 = quantile(ev, 0.25),
+            avg = mean(ev),
+            pct75 = quantile(ev, 0.75),
+            pct95 = quantile(ev, 0.95))
 
 ## Histogram that shit
-pres_state_sims %>%
-  mutate(biden_ev = (biden > 0.5) * electoral_votes) %>%
-  group_by(sim_id) %>%
-  summarise(biden = sum(biden_ev)) %>%
-  mutate(trump = 538 - biden) %>%
-  melt(id.vars = "sim_id", variable.name = "Candidate", value.name = "ev") %>%
-  ggplot(aes(x = ev, y = ..density.., fill = Candidate)) +
-  facet_wrap(~str_to_title(Candidate), nrow = 2) +
+ev_sims %>%
+  ggplot(aes(x = ev, y = ..density.., fill = candidate)) +
+  facet_wrap(~str_to_title(candidate), nrow = 3, scales = "free_y") +
   geom_vline(aes(xintercept = 270)) +
-  geom_vline(data = pres_summary_stats, aes(xintercept = avg, col = Candidate), size = 1) +
+  geom_vline(data = ev_summary_stats, aes(xintercept = avg, col = candidate), size = 1) +
   geom_histogram(alpha = 0.7, binwidth = 1) +
   scale_x_continuous(breaks = seq(from = 0, to = 500, by = 50)) +
   scale_y_continuous(labels = scales::percent) +
   scale_fill_manual(name = "Candidate", values = candidate_colors, labels = candidate_fullnames) +
   scale_colour_manual(name = "Candidate", values = candidate_colors, labels = candidate_fullnames) +
+  theme(legend.position = "bottom") +
   labs(title = "2020 United States presidential election forecast",  x = "Electoral votes", y = "Probability", 
        subtitle = paste0(month(today(), label = TRUE, abbr = FALSE), " ", day(today()), ", ", year(today())), 
        caption = "270 electoral votes needed to win")
 
 ## Probability Biden wins
-biden_win_pres_prob <- (pres_state_sims %>%
-    mutate(biden_ev = (biden > trump) * electoral_votes) %>%
-    group_by(sim_id) %>%
-    summarise(biden_ev = sum(biden_ev)) %>%
-    filter(biden_ev >= 270) %>%
+(ev_sims %>%
+    filter(candidate == "biden", ev >= 270) %>%
     nrow()) / n_sims
 
 ### By state
@@ -113,13 +106,18 @@ biden_win_prob_by_state <- pres_state_sims %>%
   summarise(biden_win_prob = mean(biden > trump))
 
 ## Popular vote/Electoral College winner crosstab
-pop_ev_crosstab <- pres_state_sims %>%
-  mutate(biden_ev = (biden > 0.5) * electoral_votes) %>%
+pop_ev_crosstab <- ev_sims %>%
   group_by(sim_id) %>%
-  summarise(biden_ev = sum(biden_ev)) %>%
-  left_join(national_popular_vote_sims %>% dplyr::select(sim_id, national_two_party_margin), by = "sim_id") %>%
-  mutate(popular_vote_winner = ifelse(national_two_party_margin >= 0, "Biden", "Trump"),
-         electoral_college_winner = ifelse(biden_ev >= 270, "Biden", "Trump")) %>%
+  filter(ev == max(ev)) %>%
+  ungroup() %>%
+  mutate(electoral_college_winner = ifelse(ev >= 270, as.character(candidate), "none")) %>%
+  left_join(national_popular_vote_sims %>% 
+              melt(id.vars = c("sim_id", "national_two_party_margin"), variable.name = "candidate", value.name = "natl_pct") %>%
+              group_by(sim_id) %>%
+              filter(natl_pct == max(natl_pct)) %>%
+              ungroup() %>%
+              mutate(popular_vote_winner = as.character(candidate)),
+            by = "sim_id") %>%
   group_by(popular_vote_winner, electoral_college_winner) %>%
   summarise(prob = n() / n_sims)
 
@@ -127,27 +125,22 @@ pop_ev_crosstab
 
 ## Bellwetheriness
 pres_conditional_distribution <- pres_state_sims %>%
-  mutate(biden_won_state = biden > trump,
-         trump_won_state = trump >= biden) %>%
-  group_by(sim_id) %>%
-  mutate(biden_total_ev = sum(biden_won_state * electoral_votes),
-         trump_total_ev = sum(trump_won_state * electoral_votes),
-         biden_won_pres = biden_total_ev >= 270,
-         trump_won_pres = trump_total_ev >= 270)
+  group_by(sim_id, state) %>%
+  filter(pct == max(pct)) %>%
+  dplyr::select(sim_id, state, state_winner = candidate) %>%
+  left_join(ev_sims %>% group_by(sim_id) %>% filter(ev == max(ev)) %>% 
+              dplyr::select(sim_id, pres_winner = candidate), 
+            by = "sim_id") 
 
-biden_bellwetherogram <- pres_state_sims %>%
-  mutate(biden_won_state = biden > trump) %>%
-  group_by(sim_id) %>%
-  mutate(biden_total_ev = sum(biden_won_state * electoral_votes),
-         biden_won_pres = biden_total_ev >= 270) %>%
-  filter(biden_won_state) %>%
+biden_bellwetherogram <- pres_conditional_distribution %>%
+  filter(state_winner == "biden") %>%
   group_by(state) %>%
-  summarise(biden_cond_prob = sum(biden_won_pres) / n())
+  summarise(biden_cond_prob = mean(pres_winner == "biden"))
 
 trump_bellwetherogram <- pres_conditional_distribution %>%
-  filter(trump_won_state) %>%
+  filter(state_winner == "trump") %>%
   group_by(state) %>%
-  summarise(trump_cond_prob = sum(trump_won_pres) / n())
+  summarise(trump_cond_prob = mean(pres_winner == "trump"))
 
 bellwetherogram <- biden_bellwetherogram %>%
   full_join(trump_bellwetherogram, by = "state") %>%
