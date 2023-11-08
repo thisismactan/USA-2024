@@ -3,8 +3,10 @@ source("src/library.R")
 regions <- read_csv("data/state_divisions.csv", lazy = FALSE)
 
 historical_results <- read_csv("data/presidential_election_results_by_state.csv", lazy = FALSE) %>%
+  left_join(read_csv("data/state_total_votes_by_year.csv", lazy = FALSE), by = c("year", "state")) %>%
   group_by(year, state) %>%
-  mutate(two_party_pct = votes / sum(votes)) %>%
+  mutate(pct = votes / total_votes,
+         two_party_pct = votes / sum(votes)) %>%
   ungroup() %>%
   dplyr::select(-candidate) %>%
   mutate(national_winner = case_when(year %in% 1992:1996 ~ "Bill Clinton",
@@ -12,6 +14,36 @@ historical_results <- read_csv("data/presidential_election_results_by_state.csv"
                                      year %in% 2008:2012 ~ "Barack Obama",
                                      year == 2016 ~ "Donald Trump",
                                      year == 2020 ~ "Joe Biden"))
+
+third_party_performance <- historical_results %>%
+  group_by(year, state, total_votes) %>%
+  summarise(votes_3p = mean(total_votes) - sum(votes)) %>%
+  ungroup() %>%
+  mutate(pct_3p = votes_3p / total_votes) %>%
+  group_by(year) %>%
+  mutate(natl_pct_3p = sum(votes_3p * !grepl("congressional", state)) / sum(total_votes * !grepl("congressional", state))) %>%
+  ungroup() %>%
+  mutate(ratio_3p = pct_3p / natl_pct_3p)
+
+third_party_ratio <- third_party_performance %>%
+  filter(!(state == "Texas" & year < 2000),
+         !(state == "New Mexico" & year %in% 2012:2016),
+         !(state == "Utah" & year == 2016)) %>%
+  group_by(state) %>%
+  summarise(min_3p = min(ratio_3p), 
+            avg_3p = mean(ratio_3p), 
+            max_3p = max(ratio_3p))
+
+third_party_propensity_model <- lmer(log_ratio_3p ~ natl_pct_3p + (1+natl_pct_3p|state), 
+                                     data = third_party_performance %>% 
+                                       filter(ratio_3p > 0) %>%
+                                       mutate(log_ratio_3p = log(ratio_3p)), REML = FALSE)
+
+third_party_propensity_coefficients <- coefficients(third_party_propensity_model)$state %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  mutate(state = rownames(coefficients(third_party_propensity_model)$state)) %>%
+  as_tibble()
 
 national_historical_results <- historical_results %>%
   filter(!grepl("congressional", state)) %>%
@@ -55,7 +87,8 @@ summary(two_party_margin_change_model)
 # With regions
 two_party_margin_change_model_regions <- lmer(I(two_party_margin - last_two_party_margin) ~ two_party_margin_natl_change + (1|region), 
                                               data = incumbent_running_results)
-fixed_effect_coefficients <- as.matrix(coefficients(two_party_margin_change_model_regions)$region)[1, 2]
+fixed_effect_coefficients <- as.matrix(coefficients(two_party_margin_change_model_regions)$region) %>%
+  apply(MARGIN = 2, FUN = mean)
 
 # Variance components
 regional_sd <- sqrt(as.numeric(VarCorr(two_party_margin_change_model_regions)))

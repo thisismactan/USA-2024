@@ -4,34 +4,33 @@ if(!exists("state_cov")) {
   source("src/state_demographic_similarity.R")
 }
 
-set.seed(2020)
+set.seed(2024)
 
-n_sims <- 100000
+n_sims <- 1e5
 
 # Simulated national popular vote based on national polling
-poll_pcts <- rmvn(n_sims, mu = president_poll_covariance$center, president_poll_covariance$cov + diag(c(0.035^2, 0.035^2)))
-colnames(poll_pcts) <- c("biden", "trump")
+poll_pcts <- rmvn(n_sims, mu = president_poll_covariance_3p$center, 
+                  president_poll_covariance_3p$cov + diag(c(0.035^2, 0.035^2, 0.01^2)))
+colnames(poll_pcts) <- c("biden", "trump", "kennedy")
 undecided_pct <- 1 - rowSums(poll_pcts)
 
-# Undecided split: Biden's share of undecided voters
-biden_undecided_frac <- rbeta(n_sims, 15, 15)
-trump_undecided_frac <- 1 - biden_undecided_frac
+# Undecided split
+undecided_candidate_frac <- rdirichlet(n_sims, c(9, 9, 3))
+undecided_distribution <- undecided_candidate_frac * undecided_pct
 
-biden_undecided_pct <- biden_undecided_frac * undecided_pct
-trump_undecided_pct <- trump_undecided_frac * undecided_pct
-
-national_popular_vote_sims <- (poll_pcts + cbind(biden_undecided_pct, trump_undecided_pct)) %>%
+national_popular_vote_sims <- (poll_pcts + undecided_distribution) %>%
   as.data.frame() %>%
-  as.tbl() %>%
+  as_tibble() %>%
   mutate(sim_id = 1:n()) %>%
-  dplyr::select(sim_id, biden, trump) %>%
-  mutate(national_two_party_margin = biden - trump)
+  dplyr::select(sim_id, biden, trump, kennedy) %>%
+  mutate(national_two_party_margin = (biden - trump) / (biden + trump))
 
 national_popular_vote_sims %>%
   as.data.frame() %>%
-  mutate(biden_win = biden > trump) %>%
-  group_by(biden_win) %>%
-  summarise(prob = n() / n_sims)
+  mutate(biden_win = (biden > trump) & (biden > kennedy),
+         trump_win = (trump > biden) & (trump > kennedy),
+         kennedy_win = (kennedy > biden) & (kennedy > trump)) %>%
+  summarise_at(vars(contains("_win")), mean)
 
 # Regional deviations
 region_names <- unique(regions$region)
@@ -59,52 +58,71 @@ total_deviations <- regions %>%
   na.locf() %>%
   mutate(total_deviation = region_deviation + state_deviation) 
 
-# Use fixed effects coefficients to simulate two-party margins by state
+# Simulate states' propensities to vote third party
 state_priors <- total_deviations %>%
   left_join(national_popular_vote_sims, by = "sim_id") %>%
-  left_join(state_two_party_margins_2016, by = "state") %>%
-  mutate(two_party_margin_natl_change = national_two_party_margin - two_party_margin_2016,
-         prior_predicted_two_party_margin = state_two_party_margin * fixed_effect_coefficients["last_two_party_margin"] +
+  left_join(state_two_party_margins_2020, by = "state") %>%
+  mutate(two_party_margin_natl_change = national_two_party_margin - two_party_margin_2020,
+         prior_predicted_two_party_margin = state_two_party_margin + fixed_effect_coefficients["(Intercept)"] + 
            two_party_margin_natl_change * fixed_effect_coefficients["two_party_margin_natl_change"] + total_deviation,
          prior_predicted_two_party_margin = pmax(prior_predicted_two_party_margin, -1),
-         prior_predicted_two_party_margin = pmin(prior_predicted_two_party_margin, 1),
-         biden = 0.5 + prior_predicted_two_party_margin / 2,
-         trump = 0.5 - prior_predicted_two_party_margin / 2) %>%
-  dplyr::select(sim_id, state, region, electoral_votes, total_deviation, biden, trump, prior_predicted_two_party_margin)
+         prior_predicted_two_party_margin = pmin(prior_predicted_two_party_margin, 1)) %>%
+  dplyr::rename(kennedy_natl = kennedy) %>%
+  left_join(third_party_propensity_coefficients, by = "state") %>%
+  mutate(log_ratio_3p = `(Intercept)` + pmin(natl_pct_3p, 0) * kennedy_natl + rnorm(n(), 0, summary(third_party_propensity_model)$sigma),
+         kennedy = exp(log_ratio_3p) * kennedy_natl,
+         biden = (1 - kennedy) / 2 + prior_predicted_two_party_margin / 2,
+         trump = (1 - kennedy) / 2 - prior_predicted_two_party_margin / 2) %>%
+  
+  # Floor major-party candidates to 5% and then normalize so everything sums to 1
+  mutate(biden = pmax(biden, 0.05),
+         trump = pmax(trump, 0.05),
+         total_pct = biden + trump + kennedy,
+         biden = biden / total_pct,
+         trump = trump / total_pct,
+         kennedy = kennedy / total_pct) %>%
+  dplyr::select(sim_id, state, region, electoral_votes, total_deviation, biden, trump, kennedy)
 
 # State prior probabilities
 state_prior_probabilities <- state_priors %>%
-  mutate(winner = case_when(biden > trump ~ "Biden",
-                            trump >= biden ~ "Trump")) %>%
+  mutate(winner = case_when(biden == pmax(biden, trump, kennedy) ~ "Biden",
+                            trump == pmax(biden, trump, kennedy) ~ "Trump",
+                            kennedy == pmax(biden, trump, kennedy) ~ "Kennedy")) %>%
   group_by(state, winner) %>%
   summarise(prob = n() / n_sims) %>%
   spread(winner, prob, fill = 0)
 
 # State prior mean and variance
 state_prior_summary_stats <- state_priors %>%
-  group_by(state) %>%
-  summarise(biden_prior_mean = mean(biden),
-            trump_prior_mean = mean(trump),
-            biden_prior_variance = var(biden),
-            trump_prior_variance = var(trump)) %>%
+  melt(measure.vars = c("biden", "trump", "kennedy"), variable.name = "candidate", value.name = "prior_pct") %>%
+  group_by(candidate, state) %>%
+  summarise(prior_mean = mean(prior_pct),
+            prior_var = var(prior_pct)) %>%
   mutate(state = case_when(grepl("'s 1st congressional district", state) ~ gsub("'s 1st congressional district", " CD-1", state),
                            grepl("'s 2nd congressional district", state) ~ gsub("'s 2nd congressional district", " CD-2", state),
                            grepl("'s 3rd congressional district", state) ~ gsub("'s 3rd congressional district", " CD-3", state),
-                           !grepl("congress", state) ~ state))
+                           !grepl("congress", state) ~ state)) %>%
+  ungroup()
 
 # Updating with state-level polling
 state_poll_averages_today <- president_averages %>%
   filter(median_date == today(), state != "National")
 
 polling_variation <- state_poll_averages_today %>%
-  group_by(state) %>%
-  summarise(margin_var = mean(var / eff_n)) %>%
-  right_join(state_prior_summary_stats, by = "state") %>%
-  mutate(polled = !is.na(margin_var),
-         margin_var = replace_na_zero(margin_var)) %>%
-  dplyr::select(state, polled, margin_var)
+  right_join(state_prior_summary_stats, by = c("state", "candidate")) %>%
+  mutate(polled = !is.na(var),
+         var = replace_na_zero(var) / eff_n) %>%
+  dplyr::select(state, candidate, polled, poll_avg = avg, poll_var = var) %>%
+  ungroup()
 
-state_cov_adj <- state_cov + diag(polling_variation$margin_var)
+state_cov_adj <- state_cov + (polling_variation %>%
+  filter(candidate != "kennedy") %>%
+  group_by(state) %>% 
+  summarise(poll_var = sum(poll_var)) %>%
+  arrange(state) %>%
+  mutate(poll_var = replace_na_zero(poll_var)) %>%
+  pull(poll_var) %>%
+  diag())
 
 while(!is.positive.definite(state_cov_adj)) {
   diag(state_cov_adj) <- diag(state_cov_adj) + 1e-6
@@ -112,11 +130,15 @@ while(!is.positive.definite(state_cov_adj)) {
 
 # Weights for average
 poll_weights <- polling_variation %>%
+  dplyr::select(-poll_var) %>%
+  spread(candidate, poll_avg) %>%
   mutate(poll_weight = polled / diag(state_cov_adj)) %>%
   dplyr::select(state, poll_weight)
 
 prior_weights <- state_prior_summary_stats %>%
-  mutate(prior_weight = 2 / (biden_prior_variance + trump_prior_variance)) %>%
+  dplyr::select(-prior_mean) %>%
+  spread(candidate, prior_var) %>%
+  mutate(prior_weight = 2 / (biden + trump)) %>%
   dplyr::select(state, prior_weight)
 
 pres_simulation_weights <- prior_weights %>%
@@ -141,42 +163,57 @@ pres_state_sims <- state_polling_error_sims %>%
   mutate(sim_id = 1:n()) %>%
   melt(id.vars = "sim_id", variable.name = "state", value.name = "error") %>%
   left_join(state_poll_averages_today %>% dplyr::select(state, candidate, avg) %>% spread(candidate, avg), by = "state") %>%
-  mutate(biden_poll = biden + error / 2,
-         trump_poll = trump - error / 2,
+  mutate(biden_poll = biden + (error * (1 - kennedy)) / 2,
+         trump_poll = trump - (error * (1 - kennedy)) / 2) %>%
+  left_join(polling_variation %>% filter(candidate == "kennedy", polled) %>% dplyr::select(state, kennedy_var = poll_var), 
+            by = "state") %>%
+  mutate(kennedy_error = rnorm(n(), 0, sqrt(kennedy_var)),
+         kennedy_poll = kennedy + kennedy_error,
          state = case_when(grepl("CD-1", state) ~ gsub(" CD-1", "'s 1st congressional district", state),
                            grepl("CD-2", state) ~ gsub(" CD-2", "'s 2nd congressional district", state),
                            grepl("CD-3", state) ~ gsub(" CD-3", "'s 3rd congressional district", state),
                            !grepl("CD-", state) ~ state)) %>%
-  dplyr::select(sim_id, state, biden_poll, trump_poll) %>%
-  right_join(state_priors %>% dplyr::select(sim_id, state, electoral_votes, biden_prior = biden, trump_prior = trump), 
-            by = c("sim_id", "state")) %>%
-  mutate_at(vars(c("biden_poll", "trump_poll")), replace_na_zero) %>%
+  dplyr::select(sim_id, state, biden, trump, kennedy) %>%
+  melt(id.vars = c("sim_id", "state"), variable.name = "candidate", value.name = "poll") %>%
+  right_join(state_priors %>% dplyr::select(sim_id, state, electoral_votes, biden, trump, kennedy) %>%
+               melt(id.vars = c("sim_id", "state", "electoral_votes"), variable.name = "candidate", value.name = "prior"), 
+            by = c("sim_id", "state", "candidate")) %>%
+  mutate(poll = replace_na_zero(poll)) %>%
   left_join(pres_simulation_weights, by = "state") %>%
-  left_join(tibble(sim_id = 1:n_sims, biden_undecided_pct = biden_undecided_frac), by = "sim_id") %>%
-  mutate(biden = biden_prior * prior_weight + biden_poll * poll_weight,
-         trump = trump_prior * prior_weight + trump_poll * poll_weight,
-         undecided = 1 - biden - trump,
-         biden = biden + biden_undecided_frac * undecided,
-         trump = trump + (1 - biden_undecided_frac) * undecided) %>%
-  dplyr::select(sim_id, state, electoral_votes, biden, trump) %>%
+  left_join(undecided_candidate_frac %>%
+              as.data.frame() %>%
+              mutate(sim_id = 1:n_sims) %>%
+              dplyr::select(sim_id, biden = V1, trump = V2, kennedy = V3) %>%
+              melt(id.vars = "sim_id", variable.name = "candidate", value.name = "undecided_frac"), 
+            by = c("sim_id", "candidate")) %>%
+  mutate(pct = prior * prior_weight + poll * poll_weight) %>%
+  group_by(sim_id, state) %>%
+  mutate(undecided = 1 - sum(pct)) %>%
+  ungroup() %>%
+  mutate(pct = pct + undecided_frac * undecided) %>%
+  dplyr::select(sim_id, state, electoral_votes, candidate, pct) %>%
   as.tbl()
 
 # Probabilities
 pres_win_probabilities <- pres_state_sims %>%
-  mutate(biden_ev = (biden > 0.5) * electoral_votes) %>%
-  group_by(sim_id) %>%
-  summarise(biden_ev = sum(biden_ev)) %>%
-  mutate(candidate = case_when(biden_ev >= 270 ~ "biden",
-                               biden_ev < 270 ~ "trump")) %>%
+  group_by(sim_id, state) %>%
+  filter(pct == max(pct)) %>%
+  group_by(sim_id, candidate) %>%
+  summarise(electoral_votes = sum(electoral_votes)) %>%
+  spread(candidate, electoral_votes, fill = 0) %>%
+  mutate(candidate = case_when(biden >= 270 ~ "biden",
+                               trump >= 270 ~ "trump",
+                               kennedy >= 270 ~ "kennedy",
+                               TRUE ~ "none")) %>%
   group_by(state = "National", candidate) %>%
   summarise(prob = n() / n_sims)
 
 pres_state_probabilities <- pres_state_sims %>%
-  mutate(winner = case_when(biden > trump ~ "biden",
-                            trump > biden ~ "trump")) %>%
-  group_by(state, winner) %>%
+  group_by(sim_id, state) %>%
+  filter(pct == max(pct)) %>%
+  group_by(state, candidate) %>%
   summarise(prob = n() / n_sims) %>%
-  spread(winner, prob, fill = 0)
+  spread(candidate, prob, fill = 0)
 
 presidential_forecast_probabilities_today <- pres_state_probabilities %>%
   melt(id.vars = "state", variable.name = "candidate", value.name = "prob") %>% 

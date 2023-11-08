@@ -27,10 +27,11 @@ president_polls <- read_csv("data/president_polls.csv", lazy = FALSE) %>%
            ifelse(pollster == "USC Dornsife/Los Angeles Times", 2, 1) / sqrt(abs(spread - 4) + 2)) %>%
   group_by(poll_id, question_id) %>%
   mutate(biden_v_trump = any(grepl("Biden", candidate)) & any(grepl("Trump", candidate)),
+         has_kennedy = any(grepl("Kennedy", candidate)),
          has_3p = any(!grepl("Biden|Trump", candidate)),
          has_4p = sum(!grepl("Biden|Trump", candidate)) >= 2) %>%
   ungroup() %>%
-  filter(biden_v_trump, pop %in% c("lv", "rv", "v"), grepl("Biden|Trump|Kennedy", candidate), has_3p, !has_4p) %>%
+  filter(biden_v_trump, pop %in% c("lv", "rv", "v"), grepl("Biden|Trump|Kennedy", candidate), has_kennedy, !has_4p) %>%
   mutate(candidate = case_when(grepl("Kennedy", candidate) ~ "kennedy",
                                grepl("Biden", candidate) ~ "biden",
                                grepl("Trump", candidate) ~ "trump")) %>%

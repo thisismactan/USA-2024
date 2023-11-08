@@ -25,13 +25,13 @@ current_poll_average %>%
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
   labs(title = paste0(graph_states, " presidential polling average"), x = "Candidate", y = "Average %",
        subtitle = paste0(month(today(), label = TRUE, abbr = FALSE), " ", day(today()), ", ", year(today())),
-       caption = "Error bars indicate 90% confidence intervals\nStates decided by single digits in 2016")
+       caption = "Error bars indicate 90% confidence intervals\nStates decided by single digits in 2020")
 
 # Polls over time
 president_averages_smoothed %>%
   filter(state %in% graph_states, candidate %in% c("biden", "trump", "kennedy")) %>%
   ggplot(aes(x = median_date, y = avg, col = candidate, fill = candidate)) +
-  geom_vline(xintercept = as.Date("2020-11-03")) +
+  geom_vline(xintercept = as.Date("2024-11-05")) +
   geom_ribbon(aes(ymin = avg - 1.645 * sqrt(var / eff_n), ymax = avg + 1.645 * sqrt(var / eff_n)), alpha = 0.2, col = NA) +
   geom_point(data = graph_state_polls, 
              aes(y = pct), alpha = 0.5, size = 1) +
@@ -41,8 +41,8 @@ president_averages_smoothed %>%
   scale_colour_manual(name = "Candidate", values = candidate_colors, labels = candidate_fullnames) +
   scale_fill_manual(name = "Candidate", values = candidate_colors, labels = candidate_fullnames) +
   scale_y_continuous(labels = scales::percent, limits = c(min_pct - 0.1, max_pct + 0.1)) +
-  scale_x_date(date_labels = "%b %Y", limits = as.Date(c("2023-01-01", "2024-11-12")), breaks = date_breaks("2 months")) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = -0.01)) +
+  scale_x_date(date_labels = "%b %Y", limits = as.Date(c("2023-11-05", "2024-11-12")), breaks = date_breaks("2 months")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
   labs(title = paste0(graph_states, " presidential polling"), x = "Date", y = "%",
        subtitle = paste0(month(today(), label = TRUE, abbr = FALSE), " ", day(today()), ", ", year(today())),
        caption = "Averages smoothed over past five days")
