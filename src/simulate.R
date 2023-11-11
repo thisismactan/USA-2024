@@ -6,7 +6,7 @@ if(!exists("state_cov")) {
 
 set.seed(2024)
 
-n_sims <- 1e5
+n_sims <- 1e4
 
 # Simulated national popular vote based on national polling
 poll_pcts <- rmvn(n_sims, mu = president_poll_covariance_3p$center, 

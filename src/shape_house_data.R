@@ -1,9 +1,19 @@
 source("src/library.R")
 
 # Two-party Democratic margins at district, state, and national levels
-historical_house_incumbents <- read_csv("data/historical_house_incumbents.csv")
-house_results <- read_csv("data/house_results_2000-2018.csv") %>%
-  left_join(historical_house_incumbents, by = c("year", "state", "seat_number"))
+historical_house_incumbents <- read_csv("data/historical_house_incumbents.csv", lazy = TRUE)
+
+dem_party_names <- c("DEMOCRAT", "DEMOCRATIC-FARMER-LABOR", "DEMOCRATIC-NONPARTISAN LEAGUE",
+                     "DEMOCRATIC-FARM-LABOR", "DEMOCRATIC-NPL")
+
+house_results <- read_csv("data/1976-2020-house.csv", lazy = TRUE) %>%
+  mutate(seat_number = pmax(1, as.numeric(district)),
+         state = str_to_title(state)) %>%
+  left_join(historical_house_incumbents, by = c("year", "state", "seat_number")) %>%
+  mutate(party = case_when(party %in% dem_party_names ~ "DEM",
+                           party == "REPUBLICAN" ~ "REP", 
+                           !is.na(party) ~ "Other",
+                           TRUE ~ "IND"))
 
 state_house_results <- house_results %>%
   filter(party %in% c("DEM", "REP")) %>%
@@ -111,7 +121,8 @@ house_results_2party <- house_results %>%
   left_join(regions %>% dplyr::select(state, region), by = "state") %>%
   dplyr::select(year, state, seat_number, region, incumbent_running, incumbent_first_elected, democrat_running, republican_running, redistricted, 
                 party, pct) %>%
-  spread(party, pct, fill = 0) 
+  spread(party, pct, fill = 0) %>%
+  filter(year >= 2000)
 
 house_results_2party_filtered <- house_results_2party %>%
   mutate(margin = DEM - REP,

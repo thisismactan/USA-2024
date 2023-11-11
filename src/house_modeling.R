@@ -1,6 +1,6 @@
 source("src/shape_house_data.R")
 
-set.seed(2020)
+set.seed(2024)
 
 # Models
 ## Linear regression
