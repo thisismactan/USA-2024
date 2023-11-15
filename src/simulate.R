@@ -294,38 +294,30 @@ if(!exists("house_lm")) {
 }
 
 # Shape House dataset
-house_2020_data <- read_csv("data/house_candidates.csv", na = character()) %>%
+house_2024_data <- read_csv("data/house_candidates.csv", na = character(), lazy = FALSE) %>%
   filter(candidate_firstname != "None") %>%
-  dplyr::select(state, seat_number, incumbent_running, candidate_party) %>%
+  dplyr::select(state, seat_number, district_abbr, incumbent_running, candidate_party) %>%
   group_by(state, seat_number) %>%
-  mutate(dem_running = any(candidate_party == "DEM") | state == "Alaska",
+  mutate(dem_running = any(candidate_party == "DEM"),
          rep_running = any(candidate_party == "REP")) %>%
   dplyr::select(-candidate_party) %>%
   distinct() %>%
   left_join(house_results_2party %>%
-              filter(year == 2018) %>%
+              filter(year == 2022) %>%
               mutate(margin = DEM - REP) %>%
-              dplyr::select(state, seat_number, region, incumbent_running_last = incumbent_running, democrat_running_last = democrat_running, 
-                            republican_running_last = republican_running, last_margin = margin),
+              dplyr::select(state, seat_number, region, incumbent_running_last = incumbent_running, 
+                            democrat_running_last = democrat_running, republican_running_last = republican_running, 
+                            last_margin = margin),
             by = c("state", "seat_number")) %>%
   mutate(incumbent_running_last = ifelse(grepl("redistricting", incumbent_running_last), "None", incumbent_running_last),
          incumbency_change = paste(incumbent_running_last, incumbent_running, sep = " to "),
-         last_natl_margin = national_house_results %>% filter(year == 2018) %>% pull(natl_margin)) %>%
-  left_join(read_csv("data/nc_redistricted.csv") %>% dplyr::select(state, seat_number, lean), by = c("state", "seat_number")) %>%
-  left_join(read_csv("data/presidential_results_by_2020_cd.csv") %>%
-              mutate(pres_2party_2016 = (clinton_2016_pct - trump_2016_pct) / (clinton_2016_pct + trump_2016_pct),
-                     pres_2party_2012 = (obama_2012_pct - romney_2012_pct) / (obama_2012_pct + romney_2012_pct)), 
-            by = c("state", "seat_number")) %>%
+         last_natl_margin = national_house_results %>% filter(year == 2022) %>% pull(natl_margin)) %>%
+  # left_join(read_csv("data/nc_redistricted.csv") %>% dplyr::select(state, seat_number, lean), by = c("state", "seat_number")) %>%
+  left_join(read_csv("data/presidential_results_by_2022_cd.csv") %>%
+              mutate(pres_2party_2020 = (biden_2020 - trump_2020) / (biden_2020 + trump_2020)), 
+            by = c("district_abbr" = "district")) %>%
   ungroup() %>%
-  mutate(fillin = (state == "North Carolina") | (abs(last_margin) == 1) | (state == "New York" & seat_number == 27) |
-           (state == "California" & seat_number == 50),
-         last_margin = case_when(fillin ~ predict(contested_2018_lm, newdata = .),
-                                 !fillin ~ last_margin),
-         incumbency_change = case_when(state == "North Carolina" ~ "None to None",
-                                       state != "North Carolina" ~ incumbency_change)) %>%
-  ungroup() %>%
-  dplyr::select(state, seat_number, region, incumbency_change, dem_running, rep_running, last_margin, last_natl_margin) %>%
-  left_join(dem_house_fundraising_frac_2020, by = c("state", "seat_number"))
+  dplyr::select(state, seat_number, district_abbr, region, incumbency_change, dem_running, rep_running, last_margin, last_natl_margin)
 
 # Generate district simulations
 if(exists("house_district_sims")) {
@@ -343,11 +335,11 @@ house_region_deviations <- regions %>%
   mutate(sim_id = rep(1:house_n_sims, 10),
          region_dev = rnorm(n(), 0, region_sd))
 
-house_state_deviations <- regions %>%
-  dplyr::select(state) %>%
-  dplyr::slice(rep(1:n(), each = house_n_sims)) %>%
-  mutate(sim_id = rep(1:house_n_sims, 56),
-         state_dev = rnorm(n(), 0, state_sd))
+# house_state_deviations <- regions %>%
+#   dplyr::select(state) %>%
+#   dplyr::slice(rep(1:n(), each = house_n_sims)) %>%
+#   mutate(sim_id = rep(1:house_n_sims, 56),
+#          state_dev = rnorm(n(), 0, state_sd))
 
 ## District-level polling simulations
 n_districts_polled <- nrow(district_averages)
@@ -358,13 +350,12 @@ district_poll_sims <- district_averages %>%
          poll_margin = poll_margin + rnorm(n(), 0, sqrt(poll_var))) %>%
   dplyr::select(-poll_var)
 
-house_district_sims <- house_2020_data %>%
+house_district_sims <- house_2024_data %>%
   dplyr::slice(rep(1:n(), each = house_n_sims)) %>%
   mutate(sim_id = rep(1:house_n_sims, 435)) %>%
   left_join(house_two_party_sims, by = "sim_id") %>%
   left_join(house_region_deviations, by = c("region", "sim_id")) %>%
-  left_join(house_state_deviations, by = c("state", "sim_id")) %>%
-  mutate(sim_margin = predict(house_lm_fundraising, newdata = .) + region_dev + state_dev + rnorm(n(), -0.01, residual_sd + 0.01),
+  mutate(sim_margin = predict(house_lmer, newdata = .) + region_dev + rnorm(n(), 0.0, residual_sd),
          sim_margin = case_when(!dem_running ~ -1,
                                 !rep_running ~ 1,
                                 dem_running & rep_running ~ sim_margin)) %>%
@@ -400,21 +391,23 @@ house_states_won <- house_district_sims %>%
             rep_states_won = sum(frac_dem_seats_won < 0.5))
 
 pres_sim_results <- pres_state_sims %>%
-  mutate(biden_ev = (biden > trump) * electoral_votes,
-         trump_ev = (trump >= biden) * electoral_votes) %>%
-  group_by(sim_id) %>%
-  summarise(biden = sum(biden_ev),
-            trump = sum(trump_ev)) %>%
+  group_by(sim_id, state) %>%
+  filter(pct == max(pct)) %>%
+  group_by(sim_id, candidate) %>%
+  summarise(ev = sum(electoral_votes)) %>%
   left_join(house_states_won %>% 
-              mutate(contingent_win = case_when(dem_states_won > rep_states_won ~ "biden",
-                                                rep_states_won >= dem_states_won ~ "trump")) %>%
+              mutate(contingent_win = case_when(dem_states_won > 25 ~ "biden",
+                                                rep_states_won > 25 ~ "trump",
+                                                TRUE ~ "No majority")) %>%
               dplyr::select(sim_id, contingent_win),
             by = "sim_id") %>%
+  spread(candidate, ev) %>%
   mutate(contingent_win = ifelse(!is.na(contingent_win), contingent_win, "trump"),
          winner = case_when(biden >= 270 ~ "biden",
                             trump >= 270 ~ "trump",
-                            biden == 269 & contingent_win == "biden" ~ "biden",
-                            trump == 269 & contingent_win == "trump" ~ "trump"))
+                            biden <= 269 & contingent_win == "biden" ~ "biden",
+                            trump <- 269 & contingent_win == "trump" ~ "trump",
+                            TRUE ~ "Something else crazy happens"))
 
 # Write this to an output file
 if(!("house_forecast_probability_history.csv" %in% list.files("output"))) {

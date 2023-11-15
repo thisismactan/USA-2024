@@ -4,9 +4,9 @@ set.seed(2024)
 
 # Models
 ## Linear regression
-house_lm_pre_2016 <- lm(margin ~ natl_margin + last_natl_margin + last_margin + incumbency_change + dem_pct_fundraising, 
-               data = house_results_2party_filtered %>% filter(year < 2016))
-summary(house_lm_pre_2016)
+house_lm_pre_2020 <- lm(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) + incumbency_change + dem_pct_fundraising, 
+                        data = house_results_2party_filtered %>% filter(year < 2020))
+summary(house_lm_pre_2020)
 
 ## Random forest
 house_rf_pre_2016 <- randomForest(formula = margin ~ last_margin + natl_margin + last_natl_margin + state_margin + last_state_margin + pres_year + 
@@ -49,8 +49,8 @@ house_results_2016_dmatrix <- xgb.DMatrix(data = house_results_2016_matrix)
 ## Linear regression
 house_results_2party_filtered %>%
   ungroup() %>%
-  filter(year == 2016, !(state == "Hawaii" & seat_number == 1)) %>%
-  mutate(pred = predict(house_lm_pre_2016, newdata = .),
+  filter(year == 2020) %>%
+  mutate(pred = predict(house_lm_pre_2020, newdata = .),
          residual = pred - margin) %>%
   summarise(avg_residual = mean(residual),
             residual_sd = sd(residual),
@@ -122,13 +122,13 @@ house_results_2party_filtered %>%
        y = "Residual")
 
 # 2018 model
-house_lm <- lm(margin ~ natl_margin + last_natl_margin + last_margin + incumbency_change, 
+house_lm <- lm(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) + incumbency_change, 
                data = house_results_2party_filtered)
-house_lm_fundraising <- lm(margin ~ natl_margin + last_natl_margin + last_margin + incumbency_change + dem_pct_fundraising, 
+house_lm_fundraising <- lm(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) + incumbency_change + dem_pct_fundraising, 
                            data = house_results_2party_filtered)
-house_lmer <- lmer(margin ~ natl_margin + last_natl_margin + last_margin + incumbency_change + (1|state) + (1|region), 
+house_lmer <- lmer(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) + incumbency_change + (1|region), 
                    data = house_results_2party_filtered)
-house_lmer_fundraising <- lmer(margin ~ natl_margin + last_natl_margin + last_margin + incumbency_change + dem_pct_fundraising + (1|state) + 
+house_lmer_fundraising <- lmer(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) + incumbency_change + dem_pct_fundraising + 
                                  (1|region), data = house_results_2party_filtered)
 
 region_sd <- sqrt(as.vector(summary(house_lmer_fundraising)$varcor$region))

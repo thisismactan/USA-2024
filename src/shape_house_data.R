@@ -6,7 +6,7 @@ historical_house_incumbents <- read_csv("data/historical_house_incumbents.csv", 
 dem_party_names <- c("DEMOCRAT", "DEMOCRATIC-FARMER-LABOR", "DEMOCRATIC-NONPARTISAN LEAGUE",
                      "DEMOCRATIC-FARM-LABOR", "DEMOCRATIC-NPL")
 
-house_results <- read_csv("data/1976-2020-house.csv", lazy = TRUE) %>%
+house_results <- read_csv("data/1976-2022-house.csv", lazy = TRUE) %>%
   mutate(seat_number = pmax(1, as.numeric(district)),
          state = str_to_title(state)) %>%
   left_join(historical_house_incumbents, by = c("year", "state", "seat_number")) %>%
