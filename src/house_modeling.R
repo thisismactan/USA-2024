@@ -9,17 +9,17 @@ house_lm_pre_2020 <- lm(I(margin - last_margin) ~ I(natl_margin - last_natl_marg
 summary(house_lm_pre_2020)
 
 ## Random forest
-house_rf_pre_2016 <- randomForest(formula = margin ~ last_margin + natl_margin + last_natl_margin + state_margin + last_state_margin + pres_year + 
+house_rf_pre_2020 <- randomForest(formula = margin ~ last_margin + natl_margin + last_natl_margin + state_margin + last_state_margin + pres_year + 
                            incumbency_change + dem_pct_fundraising + multiterm_dem + multiterm_rep, 
-                           data = house_results_2party_filtered %>% filter(year < 2016), ntree = 200, 
+                           data = house_results_2party_filtered %>% filter(year < 2020), ntree = 200, 
                            importance = TRUE, mtry = 3)
-house_rf_pre_2016
+house_rf_pre_2020
 
 ## Gradient boosted trees
 house_results_matrix <- model.matrix(~0 + last_margin + natl_margin + last_natl_margin + state_margin + last_state_margin + pres_year + 
                                        incumbency_change + dem_pct_fundraising + multiterm_dem + multiterm_rep, 
-                                     data = house_results_2party_filtered %>% filter(year < 2016))
-house_results_dmatrix <- xgb.DMatrix(data = house_results_matrix, label = house_results_2party_filtered %>% filter(year < 2016) %>% pull(margin))
+                                     data = house_results_2party_filtered %>% filter(year < 2020))
+house_results_dmatrix <- xgb.DMatrix(data = house_results_matrix, label = house_results_2party_filtered %>% filter(year < 2020) %>% pull(margin))
 
 xgb_params_list <- list(objective = "reg:squarederror",
                         eta = 0.1, 
@@ -34,16 +34,17 @@ house_xgb_cv <- xgb.cv(params = xgb_params_list,
                        early_stopping_rounds = 20)
 
 # Estimating error from 2016 model
-house_results_pre_2016_matrix <- model.matrix(~0 + last_margin + natl_margin + last_natl_margin + state_margin + last_state_margin + pres_year + 
-                                               incumbency_change, data = house_results_2party_filtered %>% filter(year < 2016))
-house_results_pre_2016_dmatrix <- xgb.DMatrix(data = house_results_pre_2016_matrix, 
-                                              label = house_results_2party_filtered %>% filter(year < 2016) %>% pull(margin))
+house_results_pre_2020_matrix <- model.matrix(~0 + last_margin + natl_margin + last_natl_margin + state_margin + last_state_margin + pres_year + 
+                                               incumbency_change, data = house_results_2party_filtered %>% filter(year < 2020))
+house_results_pre_2020_dmatrix <- xgb.DMatrix(data = house_results_pre_2020_matrix, 
+                                              label = house_results_2party_filtered %>% filter(year < 2020) %>% pull(margin))
 
-house_pre_2016_xgb <- xgb.train(params = xgb_params_list, data = house_results_pre_2016_dmatrix, nrounds = house_xgb_cv$best_iteration, nfold = 10)
+house_pre_2020_xgb <- xgb.train(params = xgb_params_list, data = house_results_pre_2020_dmatrix, 
+                                nrounds = house_xgb_cv$best_iteration, nfold = 10)
 
-house_results_2016_matrix <- model.matrix(~0 + last_margin + natl_margin + last_natl_margin + state_margin + last_state_margin + pres_year + 
-                                            incumbency_change, data = house_results_2party_filtered %>% filter(year == 2016))
-house_results_2016_dmatrix <- xgb.DMatrix(data = house_results_2016_matrix)
+house_results_2020_matrix <- model.matrix(~0 + last_margin + natl_margin + last_natl_margin + state_margin + last_state_margin + pres_year + 
+                                            incumbency_change, data = house_results_2party_filtered %>% filter(year == 2020))
+house_results_2020_dmatrix <- xgb.DMatrix(data = house_results_2020_matrix)
 
 # Model evaluation
 ## Linear regression
@@ -60,8 +61,8 @@ house_results_2party_filtered %>%
 
 house_results_2party_filtered %>%
   ungroup() %>%
-  filter(year == 2016, !(state == "Hawaii" & seat_number == 1)) %>%
-  mutate(pred = predict(house_lm_pre_2016, newdata = .),
+  filter(year == 2020, !(state == "Hawaii" & seat_number == 1)) %>%
+  mutate(pred = predict(house_lm_pre_2020, newdata = .),
          residual = pred - margin) %>%
   ggplot(aes(x = margin, y = residual)) +
   geom_point() +
@@ -74,7 +75,7 @@ house_results_2party_filtered %>%
 ## Random forest
 house_results_2party_filtered %>%
   ungroup() %>%
-  filter(year == 2016, !(state == "Hawaii" & seat_number == 1)) %>%
+  filter(year == 2020, !(state == "Hawaii" & seat_number == 1)) %>%
   mutate(pred = predict(house_rf_pre_2016, newdata = .),
          residual = pred - margin) %>%
   summarise(avg_residual = mean(residual),
@@ -121,7 +122,7 @@ house_results_2party_filtered %>%
   labs(title = "XGBoost prediction error on 2016 House results", x = "Actual margin",
        y = "Residual")
 
-# 2018 model
+# 2024 model
 house_lm <- lm(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) + incumbency_change, 
                data = house_results_2party_filtered)
 house_lm_fundraising <- lm(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) + incumbency_change + dem_pct_fundraising, 
@@ -131,6 +132,5 @@ house_lmer <- lmer(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) +
 house_lmer_fundraising <- lmer(I(margin - last_margin) ~ I(natl_margin - last_natl_margin) + incumbency_change + dem_pct_fundraising + 
                                  (1|region), data = house_results_2party_filtered)
 
-region_sd <- sqrt(as.vector(summary(house_lmer_fundraising)$varcor$region))
-state_sd <- sqrt(as.vector(summary(house_lmer_fundraising)$varcor$state))
-residual_sd <- summary(house_lmer_fundraising)$sigma
+region_sd <- sqrt(as.vector(summary(house_lmer)$varcor$region))
+residual_sd <- summary(house_lmer)$sigma

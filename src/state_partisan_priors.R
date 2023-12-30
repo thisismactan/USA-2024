@@ -62,14 +62,14 @@ two_party_margin_2020 <- national_historical_results %>%
 
 state_two_party_margins_2020 <- historical_results %>%
   filter(year == 2020) %>%
-  dplyr::select(-year, -votes, -national_winner) %>%
+  dplyr::select(-year, -votes, -pct, -national_winner) %>%
   spread(party, two_party_pct) %>%
   mutate(state_two_party_margin = Democratic - Republican) %>%
   dplyr::select(-Democratic, -Republican)
 
 # Shape to changes
 incumbent_running_results <- historical_results %>%
-  dplyr::select(-votes) %>%
+  dplyr::select(-votes, -pct) %>%
   spread(party, two_party_pct) %>%
   arrange(national_winner, state, year) %>%
   mutate(two_party_margin = Democratic - Republican) %>%

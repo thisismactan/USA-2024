@@ -10,6 +10,7 @@ download.file("https://projects.fivethirtyeight.com/polls/data/generic_ballot_po
 president_polls <- read_csv("data/president_polls.csv", lazy = FALSE) %>%
   dplyr::select(poll_id, state, pollster, question_id, start_date, end_date, n = sample_size, pop = population, mode = methodology, 
                 sponsor_party = partisan, tracking, candidate = candidate_name, pct) %>%
+  mutate(mode = ifelse(is.na(mode), "IVR", mode)) %>%
   mutate(pct = pct / 100,
          start_date = as.Date(start_date, format = "%m/%d/%y"),
          end_date = as.Date(end_date, format = "%m/%d/%y"),
@@ -22,8 +23,9 @@ president_polls <- read_csv("data/president_polls.csv", lazy = FALSE) %>%
                                    is.na(sponsor_party) ~ "None"),
          sponsor_party = case_when(grepl("McLaughlin", pollster) ~ "REP",
                                    !grepl("McLaughlin", pollster) ~ sponsor_party),
-         loess_weight = (n^0.25) * ifelse(spread == 1, 1, 5) * ifelse(grepl("IVR|Automated", mode)|is.na(mode), 1, 2) * ifelse(pop == "lv", 3, 1) *
-           ifelse(mode == "Live Phone", 2, 1) * ifelse(sponsor_party == "None", 4, 1) * ifelse(is.na(tracking), 1, 1 / spread) *
+         loess_weight = (n^0.25) * ifelse(spread == 1, 1, 5) * ifelse(grepl("IVR|Automated", mode), 1, 2) * 
+           ifelse(is.na(mode), 1, 2) * ifelse(pop == "lv", 3, 1) * ifelse(mode == "Live Phone", 2, 1) * 
+           ifelse(sponsor_party == "None", 4, 1) * ifelse(is.na(tracking), 1, 1 / spread) *
            ifelse(pollster == "USC Dornsife/Los Angeles Times", 2, 1) / sqrt(abs(spread - 4) + 2)) %>%
   group_by(poll_id, question_id) %>%
   mutate(biden_v_trump = any(grepl("Biden", candidate)) & any(grepl("Trump", candidate)),
@@ -92,7 +94,7 @@ house_district_polls <- read_csv("data/house_district_polls.csv", lazy = FALSE) 
 
 # Senate
 senate_polls_all <- read_csv("data/senate_polls.csv", lazy = FALSE) %>%
-  filter(!is.na(state), population %in% c("rv", "lv", "v"), party %in% c("DEM", "REP"), cycle == 2024) %>%
+  filter(!is.na(state), population %in% c("rv", "lv", "v"), cycle == 2024) %>%
   dplyr::select(poll_id, state, seat_name, pollster, question_id, start_date, end_date, n = sample_size, pop = population, mode = methodology, 
                 sponsor_party = sponsor_candidate_party, tracking, candidate_party = party, candidate = candidate_name, pct) %>%
   mutate(pct = pct / 100,
@@ -118,7 +120,11 @@ senate_candidates <- read_csv("data/senate_candidates.csv", lazy = FALSE) %>%
 ## Filter polls to those with the appropriate candidate matchups
 senate_poll_candidates <- senate_polls_all %>%
   dplyr::select(state, seat_name, question_id, candidate_party, candidate) %>%
-  spread(candidate_party, candidate)
+  group_by(question_id) %>%
+  filter(any(candidate_party == "DEM"), any(candidate_party == "REP")) %>%
+  ungroup() %>%
+  spread(candidate_party, candidate) %>%
+  filter(state != "Arizona" | !is.na(IND))
 
 senate_question_ids <- senate_candidates %>%
   left_join(senate_poll_candidates, by = c("state", "seat_name", "DEM", "REP")) %>%

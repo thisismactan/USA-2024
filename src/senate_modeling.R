@@ -19,7 +19,7 @@ historical_senate_results_filtered %>%
   geom_smooth(method = "lm", col = "black", linetype = 2) +
   scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
-  scale_colour_manual(name = "Year", values = c("2012" = "green4", "2016" = "blue")) +
+  scale_colour_manual(name = "Year", values = c("2012" = "green4", "2016" = "blue", "2020" = "red")) +
   labs(title = "Senate election results vs. presidential election results", subtitle = "Contested races in presidential election years",
        x = "Democratic margin of victory in state presidential election", y = "Democratic margin of victory in Senate election")
 

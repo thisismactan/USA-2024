@@ -6,7 +6,7 @@ if(!exists("state_cov")) {
 
 set.seed(2024)
 
-n_sims <- 1e4
+n_sims <- 5e4
 
 # Simulated national popular vote based on national polling
 poll_pcts <- rmvn(n_sims, mu = president_poll_covariance_3p$center, 
@@ -315,7 +315,7 @@ house_2024_data <- read_csv("data/house_candidates.csv", na = character(), lazy 
   # left_join(read_csv("data/nc_redistricted.csv") %>% dplyr::select(state, seat_number, lean), by = c("state", "seat_number")) %>%
   left_join(read_csv("data/presidential_results_by_2022_cd.csv") %>%
               mutate(pres_2party_2020 = (biden_2020 - trump_2020) / (biden_2020 + trump_2020)), 
-            by = c("district_abbr" = "district")) %>%
+            by = c("state", "seat_number")) %>%
   ungroup() %>%
   dplyr::select(state, seat_number, district_abbr, region, incumbency_change, dem_running, rep_running, last_margin, last_natl_margin)
 
@@ -325,7 +325,7 @@ if(exists("house_district_sims")) {
 }
 gc()
 
-house_n_sims <- 0.75 * n_sims
+house_n_sims <- n_sims
 
 ## State and regional-level deviations
 house_region_deviations <- regions %>%
@@ -406,7 +406,7 @@ pres_sim_results <- pres_state_sims %>%
          winner = case_when(biden >= 270 ~ "biden",
                             trump >= 270 ~ "trump",
                             biden <= 269 & contingent_win == "biden" ~ "biden",
-                            trump <- 269 & contingent_win == "trump" ~ "trump",
+                            trump <= 269 & contingent_win == "trump" ~ "trump",
                             TRUE ~ "Something else crazy happens"))
 
 # Write this to an output file
@@ -435,34 +435,44 @@ senate_region_deviations <- expand.grid(region = region_names,
   as.tbl() %>%
   mutate(region_deviation = rnorm(n(), 0, senate_region_sd))
 
-senate_2020_prior_sims <- read_csv("data/senate_candidates.csv") %>%
+senate_2024_prior_sims <- read_csv("data/senate_candidates.csv", lazy = FALSE) %>%
   dplyr::select(state, seat_name, incumbent_running, dem_statewide_elected, rep_statewide_elected) %>%
   mutate(class = case_when(seat_name == "Class I" ~ 1,
                            seat_name == "Class II" ~ 2,
                            seat_name == "Class III" ~ 3)) %>%
   dplyr::distinct() %>%
-  left_join(pres_state_sims %>% mutate(state_margin = biden - trump) %>% dplyr::select(sim_id, state, state_margin), by = "state") %>%
+  left_join(pres_state_sims %>% 
+              spread(candidate, pct) %>% 
+              mutate(state_margin = (biden - trump) / (biden + trump)) %>% 
+              dplyr::select(sim_id, state, state_margin), 
+            by = "state") %>%
   left_join(last_senate_results %>% dplyr::select(state, class, last_margin = margin), by = c("state", "class")) %>%
   left_join(regions %>% dplyr::select(state, region), by = "state") %>%
   left_join(senate_region_deviations, by = c("region", "sim_id")) %>%
-  mutate(prior_margin = predict(senate_lm, newdata = .) + region_deviation + rnorm(n(), 0, senate_residual_sd),
-         prior_margin = case_when(state == "Arkansas" ~ -1,
-                                  state != "Arkansas" ~ prior_margin)) %>%
+  mutate(incumbent_running = ifelse(incumbent_running == "IND", NA, incumbent_running),
+         residual_error = rnorm(n(), 0, senate_residual_sd)) %>%
+  mutate(prior_margin = case_when(
+    !state %in% c("Vermont", "Maine", "Arizona") ~ predict(senate_lm, newdata = .) + region_deviation + residual_error,
+    state == "Vermont" ~ rnorm(n_sims, 0.5, 0.05) + region_deviation + residual_error,
+    state == "Maine" ~ rnorm(n_sims, 0.3, 0.05) + region_deviation + residual_error,
+    state == "Arizona" ~ rnorm(n_sims, 0, 0.1) + region_deviation + residual_error)
+    ) %>%
   group_by(state, seat_name) %>%
-  mutate(prior_weight = ifelse(var(prior_margin) > 0, 1 / var(prior_margin), 1)) %>%
+  mutate(prior_margin = ifelse(class == 2, -1, prior_margin),
+         prior_weight = ifelse(var(prior_margin) > 0, 1 / var(prior_margin), 1)) %>%
   dplyr::select(sim_id, state, seat_name, class, prior_margin, prior_weight)
 
-senate_2020_states_polled <- unique(senate_average_margins$state)
+senate_2024_states_polled <- unique(senate_average_margins$state)
 
-senate_state_cov <- state_cov[senate_2020_states_polled, senate_2020_states_polled]
+senate_state_cov <- state_cov[senate_2024_states_polled, senate_2024_states_polled]
 diag(senate_state_cov) <- diag(senate_state_cov) + senate_average_margins$var
 
 while(!is.positive.definite(senate_state_cov)) {
   diag(senate_state_cov) <- diag(senate_state_cov) + 1e-6
 }
 
-senate_poll_errors <- rmvn(n_sims, mu = rep(0, length(senate_2020_states_polled)), sigma = senate_state_cov)
-colnames(senate_poll_errors) <- senate_2020_states_polled
+senate_poll_errors <- rmvn(n_sims, mu = rep(0, length(senate_2024_states_polled)), sigma = senate_state_cov)
+colnames(senate_poll_errors) <- senate_2024_states_polled
 senate_poll_errors <- as.data.frame(senate_poll_errors) %>%
   mutate(sim_id = 1:n()) %>%
   melt(id.vars = "sim_id", variable.name = "state", value.name = "error") %>%
@@ -479,67 +489,48 @@ senate_poll_sims <- senate_poll_errors %>%
   ungroup() %>%
   dplyr::select(sim_id, state, seat_name, poll_margin, poll_weight)
 
-## Real quick, do the Georgia special election
-georgia_primary_undecided_dirichlet_params <- c(5, 1, 2, 5, 3, 5, 1, 1)
-georgia_primary_undecided_pct <- rdirichlet(n_sims, alpha = georgia_primary_undecided_dirichlet_params) * georgia_primary_undecided
+senate_3p_states <- senate_3p_averages$state
+if(length(senate_3p_states) == 1) {
+  senate_3p_poll_sims <- tibble(
+    sim_id = 1:n_sims,
+    state = senate_3p_states,
+    pct_3p = rnorm(n_sims, senate_3p_averages$avg, senate_3p_averages$poll_var)
+  )
+} else if(length(senate_3p_states) > 1) {
+  senate_3p_poll_sims <- rmvn(n_sims, senate_3p_averages$avg, diag(senate_3p_averages$poll_var))
+  colnames(senate_3p_poll_sims) <- senate_3p_states
+  senate_3p_poll_sims <- senate_3p_poll_sims %>%
+    as.data.frame() %>%
+    mutate(sim_id = 1:n_sims) %>%
+    melt(id.vars = "sim_id", variable.name = "state", value.name = "pct_3p") %>%
+    as_tibble()
+} else {
+  senate_3p_poll_sims <- tibble(
+    sim_id = 1:n_sims,
+    state = "",
+    pct_3p = 0
+  )
+}
 
-georgia_primary_sims <- logit_inv(rmvn(n_sims, mu = georgia_primary_average$logit, sigma = georgia_primary_cov))
-georgia_primary_sims_decided <- rowSums(georgia_primary_sims)
-georgia_primary_sims <- ((1 - georgia_primary_undecided) * georgia_primary_sims / georgia_primary_sims_decided + georgia_primary_undecided_pct) %>%
-  as.data.frame() %>%
-  as.tbl() %>%
-  mutate(sim_id = 1:n())
-
-names(georgia_primary_sims) <- c(georgia_primary_average$candidate, "sim_id")
-
-georgia_runoff_undecided_frac <- tibble(sim_id = 1:n_sims,
-                                        firstcand_frac = rbeta(n_sims, 10, 10)) %>%
-  mutate(secondcand_frac = 1 - firstcand_frac) %>%
-  melt(id.vars = "sim_id", value.name = "undecided_frac") %>%
-  arrange(sim_id, variable) %>%
-  dplyr::select(undecided_frac) %>%
-  as.tbl()
-
-georgia_runoff_sims <- georgia_primary_sims %>%
-  melt(id.vars = "sim_id", variable.name = "candidate", value.name = "pct") %>%
-  arrange(sim_id, desc(pct)) %>%
-  group_by(sim_id) %>%
-  dplyr::slice(1:2) %>%
-  left_join(georgia_primary_candidates, by = "candidate") %>%
-  arrange(sim_id, candidate_party, candidate) %>%
-  mutate(majority_win = any(pct > 0.5),
-         matchup = glue_collapse(as.character(candidate), sep = " vs. ")) %>%
-  ungroup() %>%
-  left_join(georgia_runoff_average, by = c("matchup", "candidate")) %>%
-  bind_cols(georgia_runoff_undecided_frac) %>%
-  mutate(var = ifelse(var < 1e-4, 0.05^2, var) + 0.04^2,
-         pct = avg + rnorm(n(), 0, sqrt(var / eff_n))) %>%
-  group_by(sim_id) %>%
-  mutate(pct = (1 - undecided) * pct / sum(pct) + undecided * undecided_frac) %>%
-  ungroup() %>%
-  mutate(placeholder_party = rep(c("DEM", "REP"), n_sims)) %>%
-  group_by(sim_id, majority_win, matchup, candidate_party) %>%
-  summarise(pct = sum(pct)) %>%
-  mutate(pct = ifelse(is.na(pct), 1, pct)) %>%
-  spread(candidate_party, pct, fill = 0) %>%
-  mutate(runoff_margin = DEM - REP,
-         party = ifelse(runoff_margin > 0, "Democrats", "Republicans"))
-
-senate_state_sims <- senate_2020_prior_sims %>%
+senate_state_sims <- senate_2024_prior_sims %>%
   left_join(senate_poll_sims, by = c("sim_id", "state", "seat_name")) %>%
   mutate_at(vars(c("poll_margin", "poll_weight")), replace_na_zero) %>%
   ungroup() %>%
-  mutate(margin = (prior_margin * prior_weight + poll_margin * poll_weight) / (prior_weight + poll_weight),
-         party = ifelse(margin > 0, "Democrats", "Republicans")) %>%
-  dplyr::select(sim_id, state, seat_name, class, margin, party)
-
-georgia_special_sim_rows <- which(senate_state_sims$state == "Georgia" & senate_state_sims$class == 3)
-senate_state_sims$margin[georgia_special_sim_rows] <- georgia_runoff_sims$runoff_margin
-senate_state_sims$party[georgia_special_sim_rows] <- georgia_runoff_sims$party
+  mutate(margin = (prior_margin * prior_weight + poll_margin * poll_weight) / (prior_weight + poll_weight)) %>%
+  left_join(senate_3p_poll_sims, by = c("sim_id", "state")) %>%
+  mutate(pct_3p = replace_na_zero(pct_3p),
+         pct_dem = (1 - pct_3p) / 2 + margin / 2,
+         pct_rep = (1 - pct_3p) / 2 - margin / 2) %>%
+  mutate(party = case_when(
+    (pct_dem > pct_3p) & (pct_dem > pct_rep) ~ "Democrats",
+    (pct_rep > pct_3p) & (pct_rep > pct_dem) ~ "Republicans",
+    (pct_3p > pct_dem) & (pct_3p > pct_rep) ~ "Independents"
+  )) %>%
+  dplyr::select(sim_id, state, seat_name, class, margin, pct_3p, party)
 
 ## Timeline for the Senate forecast
-current_dem_senate_seats <- 35
-current_rep_senate_seats <- 30
+current_dem_senate_seats <- 28
+current_rep_senate_seats <- 38
 
 senate_seat_distribution <- senate_state_sims %>%
   group_by(sim_id, party) %>%

@@ -76,7 +76,7 @@ generic_ballot_averages_smoothed %>%
   scale_colour_manual(name = "Party", values = party_colors, labels = party_names) +
   scale_fill_manual(name = "Party", values = party_colors, labels = party_names) +
   scale_y_continuous(labels = scales::percent) +
-  scale_x_date(date_labels = "%b %Y", limits = as.Date(c("2020-01-01", "2020-11-10")), breaks = date_breaks("2 months")) +
+  scale_x_date(date_labels = "%b %Y", limits = as.Date(c("2023-01-01", "2024-11-05")), breaks = date_breaks("2 months")) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = -0.01)) +
   labs(title = "Generic House ballot polling", x = "Date", y = "%",
        subtitle = paste0(month(today(), label = TRUE, abbr = FALSE), " ", day(today()), ", ", year(today())),
@@ -84,8 +84,8 @@ generic_ballot_averages_smoothed %>%
 
 
 # Senate ####
-graph_states <- "Georgia"
-graph_seats <- "Class II"
+graph_states <- "Arizona"
+graph_seats <- "Class I"
 
 graph_state_polls <- senate_polls %>% 
   filter(state %in% graph_states, seat_name %in% graph_seats)

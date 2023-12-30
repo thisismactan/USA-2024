@@ -12,7 +12,7 @@ for(i in 1:n_days) {
   # Compute averages and standard errors
   suppressMessages(national_president_average_list[[i]] <- national_president_polls %>%
     mutate(age = as.numeric(current_date - median_date),
-           weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
+           weight = (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate, state) %>%
     summarise(avg = wtd.mean(pct, weight),
@@ -79,16 +79,16 @@ national_president_polls_adj <- national_president_polls %>%
 
 # Covariance matrix for current polls
 president_poll_matrix <- national_president_polls_adj %>%
-  mutate(weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
+  mutate(weight = (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
   filter(weight > 0) %>%
   dplyr::select(weight, poll_id, question_id, candidate, pct) %>% 
   spread(candidate, pct) %>%
   dplyr::select(weight, biden, trump, kennedy)
 
-president_poll_covariance_2p <- cov.wt(as.matrix(president_poll_matrix %>% filter(is.na(kennedy)) %>% dplyr::select(biden, trump)), 
-                                    wt = president_poll_matrix %>% filter(is.na(kennedy)) %>% pull(weight))
-
-weight_sum_2p <- sum(president_poll_covariance_2p$wt)
+# president_poll_covariance_2p <- cov.wt(as.matrix(president_poll_matrix %>% filter(is.na(kennedy)) %>% dplyr::select(biden, trump)), 
+#                                     wt = president_poll_matrix %>% filter(is.na(kennedy)) %>% pull(weight))
+# 
+# weight_sum_2p <- sum(president_poll_covariance_2p$wt)
 
 president_poll_covariance_3p <- cov.wt(as.matrix(president_poll_matrix %>% filter(!is.na(kennedy)) %>% dplyr::select(biden, trump, kennedy)), 
                                       wt = president_poll_matrix %>% filter(!is.na(kennedy)) %>% pull(weight))
@@ -98,8 +98,7 @@ weight_sum_3p <- sum(president_poll_covariance_3p$wt)
 president_poll_covariance_2p_matrix <- rbind(president_poll_covariance_2p$cov, "kennedy" = c(0, 0)) %>%
   cbind("kennedy" = c(0, 0, president_poll_covariance_2p$cov %>% diag() %>% sum()))
 
-president_poll_covariance <- weight_sum_3p * president_poll_covariance_3p$cov + 
-  weight_sum_2p * president_poll_covariance_2p_matrix
+president_poll_covariance <- president_poll_covariance_3p$cov 
 
 # Recompute with house effect-adjusted polls
 national_president_average_adj_list <- vector("list", n_days)
@@ -111,7 +110,7 @@ for(i in 1:n_days) {
   # Compute averages and standard errors
   suppressMessages(national_president_average_adj_list[[i]] <- national_president_polls_adj %>%
     mutate(age = as.numeric(current_date - median_date),
-           weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
+           weight = (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate, state) %>%
     summarise(avg = wtd.mean(pct, weight),
@@ -180,7 +179,7 @@ for(i in 1:n_days) {
   # Compute averages and standard errors
   generic_ballot_average_list[[i]] <- generic_ballot_polls %>%
     mutate(age = as.numeric(current_date - median_date),
-           weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
+           weight = (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate) %>%
     summarise(avg = wtd.mean(pct, weight),
@@ -211,7 +210,7 @@ generic_ballot_house_effects <- ranef(generic_ballot_house_effect_model)$pollste
 generic_ballot_house_effects <- generic_ballot_house_effects %>% 
   mutate(pollster = rownames(generic_ballot_house_effects)) %>%
   dplyr::select(pollster, house = `(Intercept)`) %>%
-  as.tbl()
+  as_tibble()
 
 # Bias due to RV
 generic_ballot_rv_bias <- ranef(generic_ballot_house_effect_model)$pop["rv", 1]
@@ -226,7 +225,7 @@ generic_ballot_polls_adj <- generic_ballot_polls %>%
 
 # Covariance matrix for current polls
 generic_ballot_poll_matrix <- generic_ballot_polls_adj %>%
-  mutate(weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 2)^0.5)) %>%
+  mutate(weight = (age <= 60) * (age >= 0) * loess_weight / exp((age + 2)^0.5)) %>%
   filter(weight > 0) %>%
   dplyr::select(weight, poll_id, question_id, candidate, pct) %>% 
   spread(candidate, pct) %>%
@@ -245,7 +244,7 @@ for(i in 1:n_days) {
   # Compute averages and standard errors
   suppressMessages(generic_ballot_average_adj_list[[i]] <- generic_ballot_polls_adj %>%
     mutate(age = as.numeric(current_date - median_date),
-           weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
+           weight = (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
     filter(weight > 0) %>%
     group_by(candidate) %>%
     summarise(avg = wtd.mean(pct, weight),
@@ -363,7 +362,7 @@ senate_polls_adj <- senate_polls %>%
 
 # Covariance matrix for current polls
 senate_poll_matrix <- senate_polls_adj %>%
-  mutate(weight = (age <= 30) * (age >= 0) * loess_weight / exp((age + 2)^0.5)) %>%
+  mutate(weight = (age <= 90) * (age >= 0) * loess_weight / exp((age + 2)^0.5)) %>%
   filter(weight > 0) %>%
   dplyr::select(weight, poll_id, question_id, candidate_party, pct) %>% 
   spread(candidate_party, pct) %>%
@@ -397,7 +396,7 @@ senate_averages_adj <- bind_rows(senate_average_adj_list) %>%
 
 senate_average_margins <- senate_polls_adj %>%
   mutate(age = as.numeric(today() - median_date),
-         weight = (age <= 60) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
+         weight = (age <= 90) * (age >= 0) * loess_weight / exp((age + 1)^0.5)) %>%
   filter(weight > 0) %>%
   dplyr::select(-candidate, -pct) %>%
   spread(candidate_party, pct_adj) %>%
@@ -427,6 +426,10 @@ senate_averages_smoothed <- senate_averages_adj %>%
          var = rollmeanr(var, 5, na.pad = TRUE),
          eff_n = rollmeanr(eff_n, 5, na.pad = TRUE)) %>%
   ungroup()
+
+# Third-party averages
+senate_3p_averages <- current_senate_averages %>%
+  filter(!candidate_party %in% c("DEM", "REP"))
 
 # Clean up after yourself
 rm(list = grep("_list", ls(), value = TRUE))

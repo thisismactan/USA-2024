@@ -25,14 +25,15 @@ presidential_leans <- historical_presidential_results %>%
   ungroup()
 
 # Historical Senate data
-historical_senate_incumbents <- read_csv("data/historical_senate_incumbents.csv")
+historical_senate_incumbents <- read_csv("data/historical_senate_incumbents.csv", lazy = FALSE)
 
-historical_senate_results <- read_csv("data/senate_results_1976-2018.csv") %>%
-  filter(year >= 2000, stage == "gen", grepl("democrat|republican", party)) %>%
-  dplyr::select(year, state, special, party, candidatevotes) %>%
+historical_senate_results <- read_csv("data/1976-2022-senate.csv", lazy = FALSE) %>%
+  filter(year >= 2000, stage == "gen", grepl("democrat|republican", party_simplified, ignore.case = TRUE)) %>%
+  mutate(state = str_to_title(state)) %>%
+  dplyr::select(year, state, special, party = party_simplified, candidatevotes) %>%
   left_join(historical_senate_incumbents, by = c("state", "year", "special")) %>%
-  mutate(party = case_when(grepl("republican", party) ~ "REP",
-                           grepl("democrat", party) ~ "DEM")) %>%
+  mutate(party = case_when(grepl("republican", party, ignore.case = TRUE) ~ "REP",
+                           grepl("democrat", party, ignore.case = TRUE) ~ "DEM")) %>%
   group_by(year, state, class, special, democrat_running, republican_running, incumbent_running, incumbent_first_elected, party,
            dem_statewide_elected, rep_statewide_elected) %>%
   summarise(party_votes = sum(candidatevotes)) %>%
@@ -48,7 +49,7 @@ historical_senate_results <- read_csv("data/senate_results_1976-2018.csv") %>%
          open_seat = incumbent_running == "None")
 
 last_senate_results <- historical_senate_results %>%
-  filter(class == 2 | (class == 3 & state %in% c("Arizona", "Georgia")), democrat_running, republican_running) %>%
+  filter(class == 1) %>%
   group_by(state, class) %>%
   dplyr::slice(n()) %>%
   ungroup()
